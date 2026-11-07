@@ -1,5 +1,6 @@
 import { h, svg, toast, download, confirmDialog } from '../lib/dom.js';
 import { getState, update, exportBackup, importBackup, resetAll, getApiKey, setApiKey, flush } from '../lib/store.js';
+import { CAST_INTRO } from '../lib/voicecast.js';
 import { koreanVoices, setSpeechPrefs, speak, hasSTT, voiceQuality, voiceGender, naturalness, speechPrefsFrom, NUDGES, hasStudio } from '../lib/speech.js';
 import { BGM_LIST, bgmRefresh } from '../lib/bgm.js';
 import { emit } from '../lib/bus.js';
@@ -68,7 +69,8 @@ export function render(_, { go, onLeave }) {
 
       h('section', { class: 'card stack' }, h('h2', null, 'Appearance'),
         row('Theme', seg([['auto', 'Follow Windows'], ['light', 'Parchment'], ['dark', 'Night']], s.theme, (v) => set('theme', v))),
-        row('Jiji keeps you company', seg([[true, 'In the corner'], [false, 'Hidden']], s.companion, (v) => set('companion', v)), 'Jiji sits in the corner while you study, reacts to your answers and holds the word tools.')),
+        row('Jiji keeps you company', seg([[true, 'In the corner'], [false, 'Hidden']], s.companion, (v) => set('companion', v)), 'Jiji sits in the corner while you study, reacts to your answers and holds the word tools.'),
+        s.companion && hasStudio() ? row('Jiji’s voice', seg([[true, 'She speaks'], [false, 'Bubbles only']], s.jijiVoice, (v) => set('jijiVoice', v)), 'When nothing else is playing, Jiji says the Korean in her bubbles out loud (고마워요, 수고했어요!) in her own voice.') : null),
 
       h('section', { class: 'card stack' }, h('h2', null, 'Jiji’s magic (AI)'),
         row('Mode', seg([['off', 'Off'], ['bridge', 'Free Claude.ai'], ['api', 'API key']], st.ai.mode, (v) => { update((x) => { x.ai.mode = v; }); draw(); }),
@@ -137,7 +139,7 @@ function voiceSection(s, set) {
   const browser = engine === 'browser' || !hasStudio();
   return h('section', { class: 'card stack' }, h('h2', null, 'Voice'),
     hasStudio() ? row('Voices', seg([['studio', 'Studio voices'], ['browser', 'Browser voice']], engine, (v) => set('voiceEngine', v)),
-      'Studio: ten natural voices recorded for Dalbit with a neural voice engine (Supertonic 3). Every story character sounds like their own person, it works offline, and it sounds the same in every browser. Browser: your browser’s own Korean voice. Text Jiji writes for you (AI lessons, Ask) always uses the browser voice.') : null,
+      'Studio: natural voices made for Dalbit with a neural voice engine (Supertonic 3): two teachers, and a voice designed for every story character, so each one sounds like their own person. It works offline and sounds the same in every browser. Browser: your browser’s own Korean voice. Text Jiji writes for you (AI lessons, Ask) always uses the browser voice.') : null,
     status,
     browser && voices.length ? row('Woman’s voice', pickFor('f', 'voice')) : null,
     browser && voices.some((v) => voiceGender(v) === 'm') ? row('Man’s voice', pickFor('m', 'maleVoice')) : null,
@@ -155,7 +157,11 @@ function voiceSection(s, set) {
     h('div', { class: 'row' },
       h('button', { class: 'btn ghost', onclick: () => speak(SAMPLE, { gender: 'f' }) }, 'Hear her'),
       h('button', { class: 'btn ghost', onclick: () => speak(SAMPLE, { gender: 'm' }) }, 'Hear him'),
-      h('button', { class: 'btn ghost', onclick: () => speak(SAMPLE, { slow: true }) }, '🐢 Hear it slowly')));
+      h('button', { class: 'btn ghost', onclick: () => speak(SAMPLE, { slow: true }) }, '🐢 Hear it slowly')),
+    hasStudio() && engine === 'studio' ? h('div', { class: 'stack', style: { gap: '6px' } }, h('b', null, 'Meet the cast'),
+      h('div', { class: 'small muted' }, 'Every character in 달빛 배달부 has a voice of their own. Click a name to hear them.'),
+      h('div', { class: 'row', style: { flexWrap: 'wrap', gap: '6px' } }, CAST_INTRO.map(([who, ko, en, text]) =>
+        h('button', { class: 'btn ghost small', title: `${en}: ${text}`, onclick: () => speak(text, { who }) }, h('span', { class: 'ko-serif' }, ko))))) : null);
 }
 
 function musicSection(s, setBgm) {

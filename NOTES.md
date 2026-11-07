@@ -88,3 +88,9 @@ reading + speaking focus, story-based memory, periodic recaps.
   → trim/level → Whisper check + retakes → Opus via headless Edge WebCodecs + own Ogg muxer → manifest.
 - sw.js: clips cache-first in 'voice-clips-1' (survives updates); build.mjs does not precache clips.
 - Tests: tools/test/voice-play.mjs (headless: clip / slow clip / fallback / browser setting).
+
+## Task 69 follow-up — character voice personas (lab + measurements: ../69-.../NOTES.md "Follow-up: voice personas")
+- Every story character has a designed voice in voicecast.js VOICES (preset blend + speed + semitone shift); table and
+  reasoning in DESIGN.md §22. Jiji: low dry alto between the women and the men (F5/M1/M4, speed 0.82), a she.
+- Jiji says the Korean in her corner bubbles aloud (pet / session end / slow toggle), own clip only, settings.jijiVoice.
+- Settings → Voice → Meet the cast (voicecast.js CAST_INTRO). Corner lines moved into content/jiji-lines.js.

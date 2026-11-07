@@ -1,3 +1,10 @@
+import { resample } from './measure.mjs';
+
+// Pitch and vocal-tract size together, by resampling (+ = higher and smaller, like a child; − = bigger, darker).
+// Also shortens/lengthens the clip by the same factor: render at speed / 2^(st/12) to keep the pace.
+export const shiftFactor = (st) => 2 ** (st / 12);
+export const shift = (wav, sr, st) => (st ? resample(wav, sr, sr / shiftFactor(st)) : wav);
+
 // Clip finishing: trim the model's ~0.6 s padding, short fades (no clicks), even loudness across voices.
 // opts: { lead: s, tail: s, db: target active RMS dBFS, peak: max peak }
 export function post(wav, sr, { lead = 0.06, tail = 0.14, db = -20, peak = 0.89 } = {}) {

@@ -5,17 +5,14 @@ import { getState, update } from '../lib/store.js';
 import { on } from '../lib/bus.js';
 import { jijiSVG } from '../art/jiji.js';
 import { icon } from '../art/icons.js';
-import { setSpeechPrefs, speechPrefsFrom } from '../lib/speech.js';
+import { setSpeechPrefs, speechPrefsFrom, speak } from '../lib/speech.js';
+import { jijiKorean } from '../lib/voicecast.js';
 import { BGM_LIST, bgmRefresh } from '../lib/bgm.js';
 import { wordMode, setWordMode } from './wordtools.js';
 import { pick } from '../lib/rand.js';
 import LINES from '../../content/jiji-lines.js';
 
-const PET = ['Mrrr.', '…Fine. One more scratch.', '고마워요. Now, back to work.', 'Purring is not a sign of approval. (It is.)', 'I was guarding your words.'];
-const IDLE = ['Still here.', 'Take your time. I have nine lives.', 'Hold Shift over any Korean word — I’ll explain it.', 'Ctrl+click a word to keep it in your word bank.'];
-const LISTEN = ['Ears up.', 'Shh. Listen.'];
-
-let root, cat, bubble, tools, mood = 'idle', moodTimer = 0, bubbleTimer = 0, idleTimer = 0, sleeping = false;
+let root, cat, bubble, tools, mood = 'idle', moodTimer = 0, bubbleTimer = 0, idleTimer = 0, sleeping = false, talking = false;
 
 function setMood(m, ms = 2600) {
   clearTimeout(moodTimer);
@@ -29,12 +26,16 @@ function draw(m) {
   cat.classList.remove('hop'); void cat.offsetWidth;
   if (m === 'happy') cat.classList.add('hop');
 }
-function say(text, ms = 3200) {
+// voice: also say the Korean part out loud in Jiji's own studio voice — never over other audio, and never in a
+// browser voice (that would not be her). Answers don't use it: the lesson reads the answer aloud then.
+function say(text, ms = 3200, voice = false) {
   if (!bubble) return;
   clearTimeout(bubbleTimer);
   bubble.textContent = text;
   bubble.classList.add('show');
   bubbleTimer = setTimeout(() => bubble.classList.remove('show'), ms);
+  const ko = voice && getState().settings.jijiVoice && !talking && jijiKorean(text);
+  if (ko) speak(ko, { who: 'jiji', studioOnly: true });
 }
 function poke() {
   clearTimeout(idleTimer);
@@ -55,7 +56,7 @@ function drawTools() {
     toolBtn('slow', s.slowAll ? 'Slow voice is ON' : 'Slow voice', s.slowAll, () => {
       update((x) => { x.settings.slowAll = !x.settings.slowAll; });
       setSpeechPrefs(speechPrefsFrom(getState().settings));
-      say(getState().settings.slowAll ? 'Slowly now. 천천히.' : 'Normal speed.');
+      say(pick(LINES[getState().settings.slowAll ? 'slowOn' : 'slowOff']), 3200, true);
       drawTools();
     }),
     musicBtn(s.bgm));
@@ -80,7 +81,7 @@ function musicBtn(b) {
 function visible() { root?.classList.toggle('hidden', !getState().settings.companion); }
 
 export function initCompanion() {
-  cat = h('button', { class: 'cmp-cat', title: 'Jiji', 'aria-label': 'Jiji — pet her', onclick: () => { poke(); setMood('happy', 1800); say(pick(PET)); } });
+  cat = h('button', { class: 'cmp-cat', title: 'Jiji', 'aria-label': 'Jiji — pet her', onclick: () => { poke(); setMood('happy', 1800); say(pick(LINES.pet), 3200, true); } });
   bubble = h('div', { class: 'cmp-bubble', role: 'status' });
   tools = h('div', { class: 'cmp-tools' });
   root = h('div', { class: 'companion' }, bubble, h('div', { class: 'cmp-row' }, tools, cat));
@@ -97,15 +98,15 @@ export function initCompanion() {
     if (correct) { setMood(graduated ? 'happy' : 'smug'); if (graduated || Math.random() < 0.3) say(pick(LINES[graduated ? 'graduated' : 'correct'])); }
     else { setMood('think', 3200); if (Math.random() < 0.5) say(pick(LINES.wrong), 4200); }
   });
-  on('session-end', () => { setMood('happy', 4000); say(pick(LINES.done), 4500); });
-  on('exercise', (ex) => { poke(); if (ex?.prompt?.audio && Math.random() < 0.15) say(pick(LISTEN), 1800); });
-  on('tts', ({ on: speaking }) => cat.classList.toggle('ears', speaking));
+  on('session-end', () => { setMood('happy', 4000); say(pick(LINES.done), 4500, true); });
+  on('exercise', (ex) => { poke(); if (ex?.prompt?.audio && Math.random() < 0.15) say(pick(LINES.listen), 1800); });
+  on('tts', ({ on: speaking }) => { talking = speaking; cat.classList.toggle('ears', speaking); });
   on('bank', ({ added, dup }) => { if (added) { setMood('happy', 1500); } else if (dup) setMood('smug', 1500); });
   on('wordmode', () => drawTools());
   on('companion', () => visible());
   on('route', (name) => {
     poke();
     root.dataset.route = name;
-    if (name === 'home' && Math.random() < 0.35) setTimeout(() => say(pick(IDLE), 4200), 1500);
+    if (name === 'home' && Math.random() < 0.35) setTimeout(() => say(pick(LINES.idle), 4200), 1500);
   });
 }

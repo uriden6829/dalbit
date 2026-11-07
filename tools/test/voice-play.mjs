@@ -30,6 +30,11 @@ const PAGE = `(async (plain) => {
   out.normal = await run('normal', () => sp.speak(plain));
   out.slow = await run('slow', () => sp.speak(plain, { slow: true }));
   out.missing = await run('missing', () => sp.speak('이 문장은 클립이 없습니다 정말로요'));
+  // Jiji in the corner: her own clip, or silence (never a stand-in voice).
+  const vc = await import('./js/lib/voicecast.js');
+  out.jiji = await run('jiji', () => sp.speak('수고했어요!', { who: 'jiji', studioOnly: true }));
+  out.jijiName = vc.clipName('jiji', false, '수고했어요!');
+  out.jijiNone = await run('jiji-none', () => sp.speak('이 문장은 클립이 없습니다 정말로요', { who: 'jiji', studioOnly: true }));
   sp.setSpeechPrefs({ engine: 'browser' });
   out.browser = await run('browser', () => sp.speak(plain));
   sp.setSpeechPrefs({ engine: 'studio' });
@@ -64,6 +69,11 @@ try {
   check(r.slow?.log[0]?.kind === 'clip' && r.slow.urls[0] !== r.normal.urls[0], 'slow plays the separate slow clip');
   check(r.missing?.log[0]?.kind === 'browser', 'line without a clip falls back to the browser voice');
   check(r.browser?.log[0]?.kind === 'browser', 'Browser voice setting uses speechSynthesis');
+  check(r.jiji?.log[0]?.kind === 'clip' && r.jiji.urls.some((u) => u.includes(r.jijiName)), 'Jiji speaks her corner line in her own voice');
+  check(r.jijiNone?.log.length === 0, 'Jiji stays silent when she has no clip');
+  const { CAST_INTRO } = await import('../../app/js/lib/voicecast.js');
+  const miss = CAST_INTRO.filter(([who, , , t]) => !(manifest.lines[t] || '').split(' ').includes(who));
+  check(!miss.length, `Meet the cast: every character has their own clip ${miss.map((x) => x[0]).join(' ')}`);
   check(!r.errors, `no runtime errors ${r.errors || ''}`);
   if (!r.studio) console.log(JSON.stringify(m).slice(0, 600));
 } finally {

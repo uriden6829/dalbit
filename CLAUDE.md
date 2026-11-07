@@ -29,7 +29,9 @@ and installed on the learner's PC; her progress lives only in her browser. Every
   `app/content/lexicon.js`. New story/lesson Korean must be covered: `node tools/lexcheck.mjs` (validate fails otherwise).
 - Voice: STUDIO voices first — every course line is pre-rendered with Supertonic 3 (10 neural voices) into
   `app/voice/clips/*.ogg` + manifest `app/voice/index.json`; casting (who speaks what, speeds) in
-  `app/js/lib/voicecast.js`, shared by the app and the builder. **After changing any Korean content run
+  `app/js/lib/voicecast.js`, shared by the app and the builder. Story characters have DESIGNED voices there (preset blends +
+  speed + semitone shift; rationale and measurements in DESIGN.md §22) — a new character gets its own entry, checked
+  so it does not sound like anyone it shares an episode with. **After changing any Korean content run
   `node tools/voice/build-voice.mjs --check`** (once: `cd tools/voice && npm install`; the model downloads to the
   git-ignored `tools/voice/.models/`). It renders only new/changed lines and deletes unused clips; validate warns
   about lines without a clip (they fall back to the browser voice). `tools/voice/` is the ONE place with npm deps

@@ -3,7 +3,8 @@
 import { COURSE } from '../../app/content/index.js';
 import { BANK } from '../../app/content/placement-bank.js';
 import { letterSyllables } from '../../app/js/engine/exercises.js';
-import { castVoice, speechText, EXTRA_LINES, TEACHERS } from '../../app/js/lib/voicecast.js';
+import JIJI from '../../app/content/jiji-lines.js';
+import { castVoice, speechText, EXTRA_LINES, TEACHERS, jijiKorean } from '../../app/js/lib/voicecast.js';
 
 // A line worth a clip: has a Hangul syllable, no Latin letters, no cloze blank / "a = b" notes, and is not grammar
 // notation like "-(으)ㄹ까요?" (loose jamo, brackets, leading dash).
@@ -37,6 +38,8 @@ export function buildCorpus() {
   // Entrance exam: the prompt, and the correct option (always written first), which is read out after answering.
   for (const it of BANK) { walk(it.prompt); add(it.options[0]); }
   EXTRA_LINES.forEach((t) => add(t));
+  // Jiji in the corner says the Korean bits of her lines in her own voice.
+  for (const t of Object.values(JIJI).flat()) { const ko = jijiKorean(t); if (ko) add(ko, 'jiji'); }
   // Long passages are also read one sentence at a time (tap a sentence, or "Read it to me" in pieces).
   for (const [t, whos] of [...lines]) if (sentences(t).length > 1) for (const s of sentences(t)) for (const w of whos) add(s, w);
 

@@ -11,7 +11,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildCorpus } from './corpus.mjs';
 import { loadTTS, hashStr } from './supertonic.mjs';
-import { post } from './post.mjs';
+import { post, shift, shiftFactor } from './post.mjs';
 import { resample, transcribe, cer } from './measure.mjs';
 import { openEncoder } from './opus.mjs';
 import { readable } from './korean-numbers.mjs';
@@ -26,7 +26,7 @@ const CLIPS = path.join(OUT, 'clips');
 const MODEL = path.join(HERE, '.models', 'supertonic-3');
 const MODEL_URL = 'https://huggingface.co/Supertone/supertonic-3/resolve/3cadd1ee6394adea1bd021217a0e650ede09a323';
 const MODEL_FILES = ['onnx/tts.json', 'onnx/unicode_indexer.json', 'onnx/duration_predictor.onnx', 'onnx/text_encoder.onnx', 'onnx/vector_estimator.onnx', 'onnx/vocoder.onnx', 'LICENSE',
-  ...Object.keys(VOICES).map((v) => `voice_styles/${v}.json`)];
+  ...Object.keys(VOICES).filter((v) => !VOICES[v].mix).map((v) => `voice_styles/${v}.json`)];
 
 // Engine settings chosen in the build iterations (task-69 NOTES.md). Changing any of them: bump STUDIO_VERSION.
 const STEPS = 8; // denoising steps: 16 measured no clearer than 8
@@ -78,20 +78,24 @@ const silence = (sr, s) => new Float32Array(Math.round(sr * s));
 
 // Normal: whole sentences (best phrasing). Slow: the way a teacher speaks slowly — short phrases, each a little
 // slower, with pauses between them. (Slowing a whole sentence makes this model repeat or drop words: Build 3.)
+// Character voices are a blend of presets plus a resampling shift; the engine renders at speed / shift factor so
+// the pace after shifting is the voice's own speed.
 async function render(tts, { text, voice, slow }, seed) {
   const parts = [];
+  const def = VOICES[voice], f = shiftFactor(def.shift || 0);
+  const say = async (t, speed, s) => shift((await tts.synth(t, { voice: def.mix || voice, steps: STEPS, speed: speed / f, seed: s, bucket: EP !== 'cpu' })).wav, tts.sr, def.shift || 0);
   if (!slow) {
     for (const [k, p] of pieces(readable(text)).entries()) {
       if (k) parts.push(silence(tts.sr, 0.3));
-      parts.push(post((await tts.synth(p, { voice, steps: STEPS, speed: VOICES[voice].speed, seed, bucket: EP !== 'cpu' })).wav, tts.sr));
+      parts.push(post(await say(p, def.speed, seed), tts.sr));
     }
     return parts.length === 1 ? parts[0] : join(parts);
   }
   const ph = phrases(readable(text), SLOW_PHRASE);
   for (const [k, p] of ph.entries()) {
-    const q = await tts.synth(p.text, { voice, steps: STEPS, speed: VOICES[voice].speed * SLOW, seed: seed + k, bucket: EP !== 'cpu' });
+    const q = await say(p.text, def.speed * SLOW, seed + k);
     // Each phrase levelled on its own; the clip keeps the same edge padding as normal clips (60 ms / 140 ms).
-    parts.push(post(q.wav, tts.sr, { lead: k ? 0.03 : 0.06, tail: k < ph.length - 1 ? 0.06 : 0.14 }));
+    parts.push(post(q, tts.sr, { lead: k ? 0.03 : 0.06, tail: k < ph.length - 1 ? 0.06 : 0.14 }));
     if (k < ph.length - 1) parts.push(silence(tts.sr, p.end ? SLOW_GAP_END : SLOW_GAP));
   }
   return join(parts);

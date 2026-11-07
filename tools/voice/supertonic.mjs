@@ -41,11 +41,27 @@ export async function loadTTS(dir, { ep = 'cpu', threads = 0 } = {}) {
     const t = (s) => new ort.Tensor('float32', Float32Array.from(s.data.flat(Infinity)), s.dims);
     return (styles[name] = { ttl: t(j.style_ttl), dp: t(j.style_dp), raw: j });
   };
+  // A designed voice: weighted sum of preset style vectors. { ttl: { F5: 0.6, M1: 0.4 }, dp: { F3: 1 } } —
+  // ttl carries the timbre, dp the rhythm (how long each sound lasts); dp defaults to the ttl weights.
+  const blend = (weights, key) => {
+    let out = null, dims = null;
+    for (const [name, w] of Object.entries(weights)) {
+      const s = style(name).raw[key];
+      const v = s.data.flat(Infinity);
+      if (!out) { out = new Float32Array(v.length); dims = s.dims; }
+      for (let i = 0; i < v.length; i++) out[i] += w * v[i];
+    }
+    return new ort.Tensor('float32', out, dims);
+  };
+  const mixStyle = (r) => {
+    const k = JSON.stringify(r);
+    return (styles[k] ||= { ttl: blend(r.ttl, 'style_ttl'), dp: blend(r.dp || r.ttl, 'style_dp') });
+  };
   const sr = cfg.ae.sample_rate, base = cfg.ae.base_chunk_size, ccf = cfg.ttl.chunk_compress_factor, ldim = cfg.ttl.latent_dim;
 
   // One chunk of text -> Float32Array wav. opts: voice, steps, speed, seed, lang
   async function synth(text, { voice = 'F1', steps = 8, speed = 1.05, seed = 1, lang = 'ko', durScale = null, bucket = false } = {}) {
-    const st = typeof voice === 'string' ? style(voice) : voice;
+    const st = typeof voice === 'string' ? style(voice) : mixStyle(voice);
     const p = preprocess(text, lang);
     const chars = Array.from(p);
     // GPU (DirectML) recompiles for every new input shape; padding lengths up to buckets lets it reuse them.
@@ -79,7 +95,7 @@ export async function loadTTS(dir, { ep = 'cpu', threads = 0 } = {}) {
     const wav = Float32Array.from(w.wav_tts.data).subarray(0, wavLen);
     return { wav, sr, dur };
   }
-  return { synth, sr, style };
+  return { synth, sr, style, mixStyle };
 }
 
 export function writeWav(file, wav, sr) {

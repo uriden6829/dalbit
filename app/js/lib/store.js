@@ -16,7 +16,7 @@ export function defaultState() {
     },
     settings: {
       minutes: 15, newPerDay: 10, romanization: 'auto', theme: 'auto', voice: '', rate: 1, maleVoice: '', voiceMix: true, slowAll: false, voiceEngine: 'studio',
-      companion: true, bgm: { on: true, preset: 'moonlit', volume: 0.45 },
+      companion: true, jijiVoice: true, bgm: { on: true, preset: 'moonlit', volume: 0.45 },
       speaking: true, storyEnglish: false, autoplay: true, sound: true,
     },
     placement: null,      // { theta, se, level, skills, startChapter, at, history: [] }
