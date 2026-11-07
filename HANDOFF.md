@@ -5,29 +5,27 @@ Fun, useful Korean course for the user's wife: accurate placement test, long pra
 recaps, witch-cat guide 지지 in a tasteful "moonlight academy" theme, webtoons that don't look AI-made, reading
 and speaking focus, optional AI through her own Claude, runs on her PC, updated online from the husband's PC.
 
-## Done (run 1) — v1.0.0, works locally, not yet online
+## State — v1.2.0 LIVE at https://uriden6829.github.io/dalbit/ (repo github.com/uriden6829/dalbit, main)
 - App (static PWA, no build step): `app/` — map and rules in `CLAUDE.md`; design (Korean 개조식) in `DESIGN.md`
-- Content: Hangul course + 12 real-life chapters, 371 items, 13 webtoon episodes (`app/content/chapters/`),
-  102-item adaptive entrance exam (`app/content/placement-bank.js`)
-- Engine: learning ladders + SM-2 SRS + Moonlight Recap (`app/js/engine/`), CAT placement (`placement.js`)
-- Speaking: TTS + speech-recognition scoring per syllable, record-and-compare fallback, story role-play
-- AI: Ask/Talk/New lesson/Real Korean via API key or free Claude.ai copy-paste (`app/js/ai/`), strict validator
-- Publishing: `.github/workflows/pages.yml`, `tools/release.mjs`, `tools/build.mjs` (offline cache + icons)
-- Tests: `tools/validate.mjs`, `tools/check-routes.mjs`, `tools/e2e.mjs`, `tools/test/*-sim.mjs` — all passing
-- Docs for the user: `README.md` (one-time GitHub setup, installing on her PC, using Task Manager)
+- Content: Hangul course + 12 chapters, 371 items, Season 1 webtoon "달빛 배달부" (13 eps), 102-item entrance exam
+- v1.1.0 (task 68): freeze fix, Jiji corner, adaptive BGM, word bank, Shift breakdown, new webtoon engine + story
+- v1.2.0 (task 69): STUDIO VOICES — every course line pre-rendered with Supertonic 3 (10 neural voices) into
+  `app/voice/` (3999 Ogg Opus clips, 18 MB, cached per clip by the service worker); casting in
+  `app/js/lib/voicecast.js`; builder `tools/voice/` (dev-only npm deps); browser voice = fallback + Settings switch.
+  Research, 7 measured build iterations and numbers: `../69-study-into-latest-tts-and-ai-voice-engin/NOTES.md`.
 
-## Key decisions (details + reasons in NOTES.md)
-- Static vanilla JS so any future session can edit without tooling; GitHub Pages for zero-cost updates.
-- Own SVG art engine for stories (no generated images). Raw fetch to the Claude API (no bundler for the SDK).
-- Default AI model claude-opus-5-5 (Sonnet/Haiku selectable in Settings for lower cost).
+## Rules that bite
+- After ANY Korean content change: `node tools/voice/build-voice.mjs --check` (once: `cd tools/voice && npm install`;
+  model downloads to git-ignored `tools/voice/.models/`). validate warns about lines without clips.
+- The repo has no git identity: run release.mjs with GIT_AUTHOR_NAME/EMAIL + GIT_COMMITTER_NAME/EMAIL env vars
+  (Task Manager used "Claude Task Manager <task-manager@localhost>").
+- `gh` CLI is not installed; confirm a deploy by fetching `js/version.js` from the live site.
 
 ## Not verified / needs the user
-- GitHub repo + Pages setup (needs his GitHub login) — README "One-time setup". Until then nothing is online.
-- Real API calls, real microphone/speech recognition, PWA install on her PC, `claude.ai/new?q=` prefill.
-- Placement difficulties are hand-set from TOPIK levels, not calibrated on real answers.
+- Nobody has listened to the studio voices by ear (all checks are Whisper read-back + signal stats). Ask her
+  which characters' voices she likes; casting is one table in voicecast.js (CAST), then re-run the builder.
+- Real microphone/speech recognition, real API calls, PWA install on her PC.
 
 ## Exact next step
-User: follow README "One-time setup" (create GitHub repo `dalbit`, `git remote add origin …`, `git push -u origin
-main`, Pages source = GitHub Actions), then open the Pages URL on her PC in Edge and install it.
-Next Claude task: run `node tools/serve.mjs` + `node tools/validate.mjs`, then build what the task asks;
-publish with `node tools/release.mjs "note"`. Likely next content: TOPIK 3 chapters (13+).
+Get her feedback on v1.2.0 voices (natural enough? slow speed right? any character mis-cast?).
+Verify any change with: validate → serve.mjs → check-routes → e2e → test/voice-play.mjs; publish with release.mjs.
