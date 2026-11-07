@@ -2,10 +2,12 @@
 import { h, svg, toast } from '../lib/dom.js';
 import { getState, update } from '../lib/store.js';
 import { speak, stopSpeaking } from '../lib/speech.js';
+import { emit } from '../lib/bus.js';
 import { romanize } from '../lib/hangul.js';
 import { episodes, chapters, chapterOf, items } from '../../content/index.js';
 import { chapterUnlocked } from '../engine/plan.js';
-import { panelSVG, speakerSide, VOICE, panelHeight } from '../art/panel.js';
+import { panelSVG, speakerSide, panelHeight } from '../art/panel.js';
+import { panelSVG2, speakerSide2, panelH } from '../art/toon/compose.js';
 import { showRoman } from '../engine/adapt.js';
 import { makeQuiz } from '../engine/exercises.js';
 import { iconEl, backLink, jiji } from './common.js';
@@ -19,8 +21,13 @@ export function render({ name, params }, { onLeave }) {
 }
 
 function cover(ep) {
+  const look = getState().profile.look;
+  if (ep.panels[0]?.shot) {
+    const p = ep.panels.find((x) => x.shot === 'wide' && x.cast?.length > 1) || ep.panels.find((x) => x.shot === 'establish') || ep.panels[0];
+    return svg(panelSVG2({ ...p, h: 0.56, fx: (p.fx || []).filter((f) => f !== 'rays') }, { look }));
+  }
   const first = ep.panels.find((p) => p.cast?.length) || ep.panels[0];
-  return svg(panelSVG({ ...first, h: 'S', lines: [], note: null }, { look: getState().profile.look }));
+  return svg(panelSVG({ ...first, h: 'S', lines: [], note: null }, { look }));
 }
 
 function library() {
@@ -45,7 +52,7 @@ function reader(id, rewind) {
   const ep = episodes.get(id);
   if (!ep) return h('p', null, 'Story not found.');
   const ch = chapterOf(ep.chapter);
-  let showEn = st.settings.storyEnglish, showRo = showRoman(st);
+  let showEn = st.settings.storyEnglish, showRo = showRoman(st), slow = false;
   const vocab = chapterWords(ch);
   const panelsHost = h('div', { class: 'toon' });
   const tools = h('div', { class: 'toon-tools' });
@@ -54,6 +61,7 @@ function reader(id, rewind) {
     tools.replaceChildren(h('div', { class: 'seg' },
       h('button', { class: showEn ? 'on' : '', onclick: () => { showEn = !showEn; update((s) => { s.settings.storyEnglish = showEn; }); draw(); } }, 'English'),
       h('button', { class: showRo ? 'on' : '', onclick: () => { showRo = !showRo; draw(); } }, 'Romanization'),
+      h('button', { class: slow ? 'on' : '', title: 'Read every bubble slowly', onclick: () => { slow = !slow; drawTools(); } }, '🐢 Slow'),
       h('button', { onclick: () => readAll() }, '▶ Read aloud')));
   }
 
@@ -63,13 +71,13 @@ function reader(id, rewind) {
       if (!document.body.contains(b)) return;
       b.scrollIntoView({ behavior: 'smooth', block: 'center' });
       b.classList.add('playing');
-      await speak(b.dataset.ko, VOICE[b.dataset.who] || {});
+      await speak(b.dataset.ko, { who: b.dataset.who, slow });
       b.classList.remove('playing');
     }
   }
 
   function bubble(p, l) {
-    const { side, off } = speakerSide(p, l.who);
+    const { side, off } = p.shot ? speakerSide2(p, l.who) : speakerSide(p, l.who);
     const cat = l.who === 'jiji';
     const hasKo = !!l.ko;
     let ko = l.ko;
@@ -86,7 +94,7 @@ function reader(id, rewind) {
       } else koEl.textContent = ko;
     }
     const en = h('span', { class: `t-en ${hasKo ? '' : 'only'} ${hasKo && !showEn ? 'hidden' : ''}` }, l.en);
-    const b = h('div', { class: `tb ${side} ${off ? 'off' : ''} ${cat ? 'cat' : ''}`, 'data-who': l.who, 'data-ko': hasKo ? ko : null, title: hasKo ? 'Tap to hear · tap again for meaning' : '' },
+    const b = h('div', { class: `tb ${side} ${off ? 'off' : ''} ${cat ? 'cat' : ''} ${hasKo ? '' : 'en-only'}`, 'data-who': l.who, 'data-ko': hasKo ? ko : null, 'data-en': l.en, title: hasKo ? 'Tap to hear · tap again for meaning' : '' },
       koEl, hasKo && showRo ? h('span', { class: 't-ro' }, romanize(ko)) : null, en);
     let taps = 0;
     b.addEventListener('click', async () => {
@@ -96,7 +104,7 @@ function reader(id, rewind) {
       if (bw) { bw.style.color = 'inherit'; bw.style.borderColor = 'transparent'; }
       if (taps > 1) en.classList.toggle('hidden');
       b.classList.add('playing');
-      await speak(ko, { ...(VOICE[l.who] || {}), ...(l.slow ? { rate: 0.6 } : {}) });
+      await speak(ko, { who: l.who, slow: slow || !!l.slow });
       b.classList.remove('playing');
     });
     return b;
@@ -109,7 +117,8 @@ function reader(id, rewind) {
       h('div', { class: 'toon-head' }, h('div', { class: 'eyebrow' }, rewind ? 'Rewind · fill the gaps from memory' : ch.extra ? 'Made for you' : ch.title.en),
         h('div', { class: 'ko-title' }, ep.title.ko), h('div', { class: 'muted' }, ep.title.en)),
       tools,
-      ...ep.panels.flatMap((p) => {
+      ...ep.panels.flatMap((p, i) => {
+        if (p.shot) return panelV2(p, i, look);
         const H = panelHeight(p);
         const layer = h('div', { class: 'layer' },
           p.note ? h('div', { class: 'note' }, p.note.ko ? h('span', { class: 'ko' }, p.note.ko, ' ') : null, p.note.en) : null,
@@ -120,6 +129,19 @@ function reader(id, rewind) {
         return signs ? [panel, signs] : [panel];
       }),
       endBlock());
+  }
+
+  // v2: caption box over the top edge, art, then the speech bubbles in the gutter below (tails point up at the panel).
+  function panelV2(p, i, look) {
+    const prev = ep.panels[i - 1];
+    const sceneChange = !prev || prev.scene !== p.scene || p.shot === 'establish';
+    const block = h('section', { class: `tp ${sceneChange && i ? 'tp-gap' : ''} tp-${p.shot}` },
+      p.note ? h('div', { class: 'tp-cap', 'data-en': p.note.en }, p.note.ko ? h('span', { class: 'ko' }, p.note.ko, ' ') : null, p.note.en) : null,
+      h('div', { class: 'tp-art', style: { aspectRatio: `360 / ${panelH(p)}` } }, svg(panelSVG2(p, { look }))),
+      p.lines?.length ? h('div', { class: 'tp-talk' }, p.lines.map((l) => bubble(p, l))) : null,
+      p.signs?.length ? h('div', { class: 'signs' }, p.signs.map(([ko, en]) =>
+        h('button', { class: 'chip', title: en, onclick: (e) => { speak(ko); e.currentTarget.lastChild.textContent = ` ${en}`; } }, iconEl('eye', 14), h('span', { class: 'ko' }, ko), h('span', { class: 'small muted' }, '')))) : null);
+    return [block];
   }
 
   function endBlock() {
@@ -157,6 +179,7 @@ function reader(id, rewind) {
   }
 
   draw();
+  emit('story', { id: ep.id });
   return h('div', { class: 'stack' }, backLink(ch.extra ? '#/stories' : `#/chapter/${ch.id}`, ch.title.en), panelsHost);
 }
 

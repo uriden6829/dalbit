@@ -10,8 +10,8 @@ const exe = ['C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', 'C:
 const port = process.env.PORT || 5173;
 const routes = process.argv.slice(2).length ? process.argv.slice(2) : [
   'home', 'welcome', 'course', 'chapter/h0', 'chapter/c01', 'chapter/c06', 'study/daily', 'study/lesson/c01-l2', 'study/lesson/h0-l1', 'study/exam/c01',
-  'study/review', 'study/recap', 'study/tricky', 'stories', 'story/ep00', 'story/ep01/rewind', 'story/ep05', 'story/ep09', 'speak', 'speak/c01', 'speak/c01/story',
-  'spellbook', 'ask', 'settings', 'placement',
+  'study/review', 'study/recap', 'study/tricky', 'stories', 'story/ep00', 'story/ep01/rewind', 'story/ep05', 'story/ep09', 'story/ep11', 'story/ep12', 'speak', 'speak/c01', 'speak/c01/story',
+  'spellbook', 'wordbank', 'wordbank/cards', 'ask', 'settings', 'placement',
 ];
 
 function load(route, budget = 6000) {

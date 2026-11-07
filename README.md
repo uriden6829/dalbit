@@ -26,7 +26,7 @@ automatically the next time she opens the app with internet.
    progress never leave her PC). Don't add a README there.
 2. In this folder, connect and push (Git will ask you to sign in to GitHub once):
    ```
-   git remote add origin https://github.com/<your-username>/dalbit.git
+   git remote add origin https://github.com/uriden6829/dalbit.git
    git push -u origin main
    ```
 3. On GitHub: repository → **Settings → Pages → Source: GitHub Actions**. The included workflow

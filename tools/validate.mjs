@@ -4,6 +4,10 @@ import { COURSE, items, lessons, episodes, chapters, problems as indexProblems }
 import { BANK } from '../app/content/placement-bank.js';
 import { SCENES } from '../app/js/art/scenes.js';
 import { CAST } from '../app/js/art/people.js';
+import { FOLK } from '../app/js/art/toon/folk.js';
+import { VISTAS } from '../app/js/art/toon/vista.js';
+import { PROP_NAMES, SHOTS } from '../app/js/art/toon/compose.js';
+import { rebuildDictionary, analyzeWord, words as koWords } from '../app/js/lib/dictionary.js';
 import { makeExercise, LADDER } from '../app/js/engine/exercises.js';
 import { Session } from '../app/js/engine/session.js';
 import { defaultState } from '../app/js/lib/store.js';
@@ -13,7 +17,7 @@ import { validatePack } from '../app/js/ai/safety.js';
 const errors = [...indexProblems];
 const warn = [];
 const hasHangul = (s) => /[가-힣]/.test(s);
-const WHO = new Set(['me', 'jiji', ...Object.keys(CAST)]);
+const WHO = new Set(['me', 'jiji', ...Object.keys(CAST), ...Object.keys(FOLK)]);
 
 // Chapters and items
 const ids = new Set();
@@ -48,10 +52,16 @@ for (const ch of COURSE) {
   if (ep.panels.length < 4) warn.push(`${ep.id}: very short episode`);
   ep.panels.forEach((p, i) => {
     const where = `${ep.id} panel ${i + 1}`;
-    if (!SCENES[p.scene]) errors.push(`${where}: unknown scene "${p.scene}"`);
+    const v2 = !!p.shot; // season files use the v2 webtoon engine (app/js/art/toon/)
+    if (v2) {
+      if (!SHOTS.includes(p.shot)) errors.push(`${where}: unknown shot "${p.shot}"`);
+      if (p.shot !== 'detail' && !VISTAS[p.scene]) errors.push(`${where}: unknown scene "${p.scene}"`);
+      if (p.shot === 'detail' && !PROP_NAMES.includes(p.prop)) errors.push(`${where}: unknown prop "${p.prop}"`);
+    } else if (!SCENES[p.scene]) errors.push(`${where}: unknown scene "${p.scene}"`);
     for (const c of p.cast || []) {
       if (!WHO.has(c[0])) errors.push(`${where}: unknown character "${c[0]}"`);
-      if (!(c[1] >= 0 && c[1] <= 1)) errors.push(`${where}: x position must be 0..1`);
+      const x = v2 ? c[1]?.x : c[1];
+      if (!(x >= 0 && x <= 1)) errors.push(`${where}: x position must be 0..1`);
     }
     for (const l of p.lines || []) {
       if (!WHO.has(l.who)) errors.push(`${where}: unknown speaker "${l.who}"`);
@@ -64,6 +74,12 @@ for (const ch of COURSE) {
     if (!(q[2] >= 0 && q[2] < q[1].length)) errors.push(`${ep.id}: quiz answer out of range for "${q[0]}"`);
     if (new Set(q[1]).size !== q[1].length) errors.push(`${ep.id}: quiz has duplicate options for "${q[0]}"`);
   }
+}
+
+// Shift breakdown / word bank: every Korean word in the stories must be in the dictionary (node tools/lexcheck.mjs lists them).
+rebuildDictionary();
+for (const ep of episodes.values()) for (const p of ep.panels) for (const l of p.lines || []) for (const w of koWords(l.ko || '')) {
+  if (!analyzeWord(w.text)) errors.push(`${ep.id}: "${w.text}" is not in the dictionary (add it to app/content/lexicon.js)`);
 }
 
 // Every exercise type can be generated for every item, and every lesson session terminates.

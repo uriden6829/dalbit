@@ -1,4 +1,4 @@
-import { words, phrases, grammar, say } from '../dsl.js';
+import { words, phrases, grammar } from '../dsl.js';
 
 export default {
   id: 'c03',
@@ -81,34 +81,5 @@ export default {
       ],
     },
   ],
-  episode: {
-    id: 'ep03',
-    title: { ko: '한밤의 편의점', en: 'The Midnight Convenience Store' },
-    panels: [
-      { scene: 'street', h: 'M', time: 'night', cast: [['me', 0.35, 'sleepy'], ['jiji', 0.7, 'idle']],
-        note: { en: 'Midnight. Studying is hungry work.' },
-        lines: [say('jiji', '', 'Convenience store. Bring your counting spells.')] },
-      { scene: 'store', h: 'M', cast: [['me', 0.32, 'think'], ['jiji', 0.12, 'idle']],
-        note: { en: 'Triangle kimbap, banana milk — and a sign you can almost read.' },
-        signs: [['1+1', 'buy one, get one free'], ['행사 상품', 'items on sale'], ['편의점', 'convenience store']] },
-      { scene: 'store', h: 'M', cast: [['me', 0.3, 'talk'], ['clerk', 0.75, 'neutral', { face: 'left' }]],
-        lines: [say('me', '이거 얼마예요?', 'How much is this?'), say('clerk', '천오백 원이에요.', 'It’s 1,500 won.')] },
-      { scene: 'store', h: 'S', cast: [['me', 0.5, 'think', { zoom: 1.5 }]],
-        lines: [say('me', '', '천오백… one thousand, five hundred. I got that!')] },
-      { scene: 'store', h: 'M', cast: [['me', 0.3, 'smile'], ['clerk', 0.75, 'talk', { face: 'left' }]],
-        lines: [say('clerk', '봉투 필요하세요?', 'Do you need a bag?'), say('me', '아니요, 괜찮아요.', 'No thanks, I’m fine.')] },
-      { scene: 'store', h: 'M', cast: [['me', 0.3, 'surprised'], ['clerk', 0.75, 'talk', { face: 'left' }]],
-        lines: [say('clerk', '데워 드릴까요?', 'Shall I heat it up?'), say('me', '네? 아… 네!', 'Huh? Oh… yes!')] },
-      { scene: 'store', h: 'M', cast: [['me', 0.3, 'talk'], ['clerk', 0.75, 'smile', { face: 'left' }]],
-        lines: [say('clerk', '모두 삼천 원이에요.', 'That’s 3,000 won altogether.'), say('me', '카드로 할게요.', 'I’ll pay by card.')] },
-      { scene: 'store', h: 'L', cast: [['jiji', 0.5, 'smug', { zoom: 2.3 }]],
-        lines: [say('jiji', '바나나 우유 1+1이에요.', 'Banana milk is buy-one-get-one.'), say('jiji', '하나는 제 거예요.', 'One of them is mine.')] },
-    ],
-    quiz: [
-      ['How much was the first item?', ['1,500 won', '15,000 won', '500 won', '5,000 won'], 0],
-      ['봉투 필요하세요? means…', ['Do you need a bag?', 'Do you need a receipt?', 'Is that everything?', 'Card or cash?'], 0],
-      ['How much was the total?', ['3,000 won', '1,500 won', '300 won', '30,000 won'], 0],
-      ['1+1 on a sign means…', ['Buy one, get one free', 'Two for 1,000 won', 'One per customer', 'Sold out'], 0],
-    ],
-  },
+  // The webtoon episode for this chapter lives in content/story/season1.js.
 };

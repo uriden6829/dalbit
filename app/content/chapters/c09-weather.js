@@ -1,4 +1,4 @@
-import { words, phrases, grammar, say } from '../dsl.js';
+import { words, phrases, grammar } from '../dsl.js';
 
 export default {
   id: 'c09',
@@ -72,37 +72,5 @@ export default {
       ],
     },
   ],
-  episode: {
-    id: 'ep09',
-    title: { ko: '한강 피크닉', en: 'Picnic by the Han River' },
-    panels: [
-      { scene: 'river', h: 'M', time: 'day', cast: [['me', 0.3, 'happy'], ['minji', 0.7, 'happy', { face: 'left' }]],
-        note: { en: 'Saturday, three o’clock. Yeouido Han River Park.' },
-        lines: [say('minji', '날씨 정말 좋죠?', 'Isn’t the weather great?'), say('me', '네, 하늘이 정말 맑네요!', 'Yes, the sky is so clear!')] },
-      { scene: 'river', h: 'M', time: 'day', cast: [['jiji', 0.4, 'happy']],
-        lines: [say('jiji', '치킨이에요!', 'It’s chicken!')], signs: [['치킨', 'fried chicken']] },
-      { scene: 'river', h: 'M', time: 'day', cast: [['me', 0.3, 'talk'], ['minji', 0.7, 'smile', { face: 'left' }]],
-        lines: [say('minji', '어떤 계절을 좋아해요?', 'Which season do you like?'), say('me', '저는 가을을 좋아해요. 시원해요.', 'I like autumn. It’s cool.')] },
-      { scene: 'river', h: 'M', time: 'day', cast: [['me', 0.3, 'smile'], ['minji', 0.7, 'happy', { face: 'left' }]],
-        lines: [say('minji', '저는 봄이요! 벚꽃이 예뻐요.', 'Spring for me! The cherry blossoms are so pretty.')] },
-      { scene: 'river', h: 'M', time: 'dusk', cast: [['me', 0.3, 'smile'], ['minji', 0.7, 'sad', { face: 'left' }]],
-        note: { en: 'The wind picks up.' },
-        lines: [say('me', '바람이 시원하네요.', 'What a nice breeze.'), say('minji', '좀 춥네요…', 'It’s getting a bit cold…')] },
-      { scene: 'river', h: 'M', rain: true, cast: [['me', 0.3, 'surprised'], ['minji', 0.7, 'surprised', { face: 'left' }]],
-        note: { en: 'And then, out of nowhere—' },
-        lines: [say('me', '비가 와요!', 'It’s raining!')] },
-      { scene: 'river', h: 'M', rain: true, cast: [['me', 0.3, 'sad'], ['minji', 0.7, 'talk', { face: 'left' }]],
-        lines: [say('minji', '우산 있어요?', 'Do you have an umbrella?'), say('me', '아니요, 없어요…', 'No, I don’t…')] },
-      { scene: 'river', h: 'L', rain: true, cast: [['jiji', 0.5, 'smug', { zoom: 2.3 }]],
-        lines: [say('jiji', '', 'A witch without an umbrella. Classic.')] },
-      { scene: 'river', h: 'M', rain: true, cast: [['me', 0.32, 'happy'], ['minji', 0.66, 'happy', { face: 'left' }]],
-        note: { en: 'They run all the way to the station, soaked and laughing.' } },
-    ],
-    quiz: [
-      ['Which season does Minji like?', ['Spring', 'Summer', 'Autumn', 'Winter'], 0],
-      ['맑네요 means…', ['Oh, it’s clear!', 'Oh, it’s cold!', 'Oh, it’s windy!', 'Oh, it’s raining!'], 0],
-      ['What happened at the end?', ['It started raining', 'It started snowing', 'They lost the chicken', 'Minji went home early'], 0],
-      ['날씨 정말 좋죠? expects…', ['Agreement (네!)', 'A price', 'Directions', 'An apology'], 0],
-    ],
-  },
+  // The webtoon episode for this chapter lives in content/story/season1.js.
 };

@@ -1,4 +1,4 @@
-import { words, phrases, grammar, say } from '../dsl.js';
+import { words, phrases, grammar } from '../dsl.js';
 
 export default {
   id: 'c08',
@@ -75,34 +75,5 @@ export default {
       ],
     },
   ],
-  episode: {
-    id: 'ep08',
-    title: { ko: '딸기 할머니', en: 'The Strawberry Grandmother' },
-    panels: [
-      { scene: 'market', h: 'M', cast: [['me', 0.28, 'smile'], ['grandma', 0.76, 'happy', { face: 'left' }]],
-        note: { en: 'Saturday morning. Fruit for the picnic.' },
-        signs: [['딸기 5,000원', 'strawberries, 5,000 won'], ['사과 3개 4,000원', 'three apples for 4,000 won']],
-        lines: [say('grandma', '어서 와요! 딸기 아주 달아요.', 'Come and look! The strawberries are very sweet.')] },
-      { scene: 'market', h: 'M', cast: [['me', 0.28, 'talk'], ['grandma', 0.76, 'smile', { face: 'left' }]],
-        lines: [say('me', '딸기 한 팩에 얼마예요?', 'How much for a pack of strawberries?'), say('grandma', '오천 원이에요.', '5,000 won.')] },
-      { scene: 'market', h: 'S', cast: [['me', 0.5, 'think', { zoom: 1.5 }]],
-        lines: [say('me', '', 'Five thousand… a bit much on a student budget.')] },
-      { scene: 'market', h: 'M', cast: [['me', 0.28, 'smile'], ['grandma', 0.76, 'surprised', { face: 'left' }]],
-        lines: [say('me', '좀 깎아 주세요.', 'Could you give me a little discount?'), say('grandma', '아이고, 학생이에요? 그럼 사천오백 원!', 'Oh my, a student? Then 4,500!')] },
-      { scene: 'market', h: 'M', cast: [['me', 0.28, 'happy'], ['grandma', 0.76, 'smile', { face: 'left' }]],
-        lines: [say('me', '감사합니다! 사과 세 개도 주세요.', 'Thank you! Three apples too, please.')] },
-      { scene: 'market', h: 'M', cast: [['me', 0.28, 'surprised'], ['grandma', 0.76, 'happy', { face: 'left', arms: 'hold', prop: '#c9302c' }]],
-        lines: [say('grandma', '덤으로 하나 더 줄게요.', 'I’ll throw in one extra.')] },
-      { scene: 'market', h: 'L', cast: [['jiji', 0.5, 'happy', { zoom: 2.2 }]],
-        lines: [say('jiji', '', 'Market rule: be polite, smile, and the grandmothers will feed you forever.')] },
-      { scene: 'market', h: 'M', cast: [['me', 0.28, 'talk'], ['grandma', 0.76, 'smile', { face: 'left' }]],
-        lines: [say('me', '모두 얼마예요?', 'How much altogether?'), say('grandma', '팔천오백 원.', '8,500 won.')] },
-    ],
-    quiz: [
-      ['How much were the strawberries at first?', ['5,000 won', '4,500 won', '4,000 won', '8,500 won'], 0],
-      ['Why did the price drop?', ['She is a student', 'She bought a lot', 'It was closing time', 'They weren’t fresh'], 0],
-      ['덤 means…', ['A little extra for free', 'A discount coupon', 'A paper bag', 'The total price'], 0],
-      ['What did she pay in total?', ['8,500 won', '9,000 won', '5,000 won', '4,500 won'], 0],
-    ],
-  },
+  // The webtoon episode for this chapter lives in content/story/season1.js.
 };

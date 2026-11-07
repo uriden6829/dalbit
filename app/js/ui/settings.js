@@ -1,6 +1,8 @@
 import { h, svg, toast, download, confirmDialog } from '../lib/dom.js';
 import { getState, update, exportBackup, importBackup, resetAll, getApiKey, setApiKey, flush } from '../lib/store.js';
-import { koreanVoices, setSpeechPrefs, speak, hasSTT, hasKoreanVoice } from '../lib/speech.js';
+import { koreanVoices, setSpeechPrefs, speak, hasSTT, voiceQuality, voiceGender, naturalness, speechPrefsFrom, NUDGES } from '../lib/speech.js';
+import { BGM_LIST, bgmRefresh } from '../lib/bgm.js';
+import { emit } from '../lib/bus.js';
 import { MODELS, DEFAULT_MODEL, testKey } from '../ai/claude.js';
 import { VERSION, CHANGELOG } from '../version.js';
 import { levelOf } from '../engine/adapt.js';
@@ -29,7 +31,8 @@ export function render(_, { go, onLeave }) {
   function draw() {
     const st = getState();
     const s = st.settings;
-    const set = (k, v) => { update((x) => { x.settings[k] = v; }); if (k === 'theme') applyTheme(); if (k === 'voice' || k === 'rate') setSpeechPrefs({ [k]: v }); draw(); };
+    const set = (k, v) => { update((x) => { x.settings[k] = v; }); if (k === 'theme') applyTheme(); if (k === 'companion') emit('companion', v); setSpeechPrefs(speechPrefsFrom(getState().settings)); draw(); };
+    const setBgm = (k, v) => { update((x) => { x.settings.bgm[k] = v; }); bgmRefresh(); draw(); };
     const voices = koreanVoices();
     const look = st.profile.look;
     const setLook = (k, v) => { update((x) => { x.profile.look[k] = v; }); draw(); };
@@ -60,15 +63,12 @@ export function render(_, { go, onLeave }) {
         row('Play Korean after a correct answer', seg([[true, 'On'], [false, 'Off']], s.autoplay, (v) => set('autoplay', v))),
         row('Stories show English by default', seg([[false, 'No — tap to reveal'], [true, 'Yes']], s.storyEnglish, (v) => set('storyEnglish', v)))),
 
-      h('section', { class: 'card stack' }, h('h2', null, 'Voice'),
-        voices.length ? row('Korean voice', h('select', { onchange: (e) => set('voice', e.target.value) },
-          h('option', { value: '', selected: !s.voice }, 'Best available'), voices.map((v) => h('option', { value: v.name, selected: s.voice === v.name }, v.name)))) :
-          h('p', { class: 'muted small' }, hasKoreanVoice() ? '' : 'No Korean voice found. Microsoft Edge includes natural Korean voices (SunHi, InJoon) — open the app in Edge, or add the Korean speech pack in Windows Settings → Time & language → Speech.'),
-        row(`Speed: ${s.rate.toFixed(2)}×`, h('input', { type: 'range', min: 0.6, max: 1.2, step: 0.05, value: s.rate, onchange: (e) => set('rate', Number(e.target.value)) })),
-        h('div', null, h('button', { class: 'btn ghost', onclick: () => speak('안녕하세요. 저는 지지예요. 만나서 반가워요.') }, 'Test voice'))),
+      voiceSection(s, set),
+      musicSection(s, setBgm),
 
       h('section', { class: 'card stack' }, h('h2', null, 'Appearance'),
-        row('Theme', seg([['auto', 'Follow Windows'], ['light', 'Parchment'], ['dark', 'Night']], s.theme, (v) => set('theme', v)))),
+        row('Theme', seg([['auto', 'Follow Windows'], ['light', 'Parchment'], ['dark', 'Night']], s.theme, (v) => set('theme', v))),
+        row('Jiji keeps you company', seg([[true, 'In the corner'], [false, 'Hidden']], s.companion, (v) => set('companion', v)), 'Jiji sits in the corner while you study, reacts to your answers and holds the word tools.')),
 
       h('section', { class: 'card stack' }, h('h2', null, 'Jiji’s magic (AI)'),
         row('Mode', seg([['off', 'Off'], ['bridge', 'Free Claude.ai'], ['api', 'API key']], st.ai.mode, (v) => { update((x) => { x.ai.mode = v; }); draw(); }),
@@ -115,4 +115,51 @@ export function render(_, { go, onLeave }) {
   }
   draw();
   return root;
+}
+
+const SAMPLE = '안녕하세요. 오늘 저녁에 같이 한국어 공부해요. 천천히 해도 괜찮아요.';
+
+function voiceSection(s, set) {
+  const voices = koreanVoices();
+  const q = voiceQuality();
+  const label = (v) => `${v.name.replace(/^Microsoft\s+/, '').replace(/\s*-\s*Korean.*$/, '')}${naturalness(v) >= 6 ? ' · natural' : ' · basic'}`;
+  const pickFor = (g, key) => h('select', { onchange: (e) => set(key, e.target.value) },
+    h('option', { value: '', selected: !s[key] }, 'Most natural available'),
+    voices.filter((v) => voiceGender(v) === g).map((v) => h('option', { value: v.name, selected: s[key] === v.name }, label(v))));
+  const status = q === 'natural'
+    ? h('div', { class: 'pill', style: { background: 'color-mix(in srgb, var(--sage) 25%, transparent)' } }, '✓ Natural neural voices are on')
+    : h('div', { class: 'card', style: { background: 'color-mix(in srgb, var(--rose) 14%, transparent)', padding: '12px 14px' } },
+      h('b', null, q === 'none' ? 'No Korean voice found.' : 'Only a basic (robotic) Korean voice is available here.'),
+      h('div', { class: 'small' }, 'Open Dalbit in Microsoft Edge: it includes natural Korean voices (선히, 인준, Hyunsu) that sound like real people. They need internet; without it the basic voice is used.'));
+  return h('section', { class: 'card stack' }, h('h2', null, 'Voice'),
+    status,
+    voices.length ? row('Woman’s voice', pickFor('f', 'voice')) : null,
+    voices.some((v) => voiceGender(v) === 'm') ? row('Man’s voice', pickFor('m', 'maleVoice')) : null,
+    row('Different people', seg([[true, 'Mix voices'], [false, 'One voice']], s.voiceMix, (v) => set('voiceMix', v)),
+      'Mix: lessons alternate between a woman’s and a man’s voice, and every story character speaks with their own voice — like hearing Korean from real people.'),
+    row(`Speed: ${s.rate.toFixed(2)}×`, h('input', { type: 'range', min: 0.6, max: 1.25, step: 0.05, value: s.rate, onchange: (e) => set('rate', Number(e.target.value)) }), '1.00× is natural speaking speed.'),
+    row('Slow everything down', seg([[false, 'Normal'], [true, 'Slow (turtle)']], s.slowAll, (v) => set('slowAll', v)),
+      'Every 🐢 button always plays slowly. This switch (also on Jiji’s corner) makes all Korean audio slower. The voice itself speaks slower — it is not stretched, so it does not crackle.'),
+    h('div', { class: 'stack', style: { gap: '6px' } }, h('b', null, 'Something sounds wrong?'),
+      h('div', { class: 'row' }, NUDGES.map((n) => h('button', { class: 'btn ghost small', onclick: () => {
+        const ch = n.apply(s);
+        for (const [k, v] of Object.entries(ch)) set(k === 'mix' ? 'voiceMix' : k, v);
+        speak(SAMPLE);
+      } }, n.label)))),
+    h('div', { class: 'row' },
+      h('button', { class: 'btn ghost', onclick: () => speak(SAMPLE, { gender: 'f' }) }, 'Hear her'),
+      h('button', { class: 'btn ghost', onclick: () => speak(SAMPLE, { gender: 'm' }) }, 'Hear him'),
+      h('button', { class: 'btn ghost', onclick: () => speak(SAMPLE, { slow: true }) }, '🐢 Hear it slowly')));
+}
+
+function musicSection(s, setBgm) {
+  const b = s.bgm;
+  return h('section', { class: 'card stack' }, h('h2', null, 'Music'),
+    row('Background music', seg([[true, 'On'], [false, 'Off']], b.on, (v) => setBgm('on', v)),
+      'Live music played by a small band inside the app. It gets quieter and simpler while you concentrate and almost silent in listening and speaking exercises.'),
+    row('Mood', h('div', { class: 'grid two', style: { gap: '8px' } }, BGM_LIST.map((p) => h('button', {
+      class: `card tile ${b.preset === p.id ? 'on' : ''}`, style: { textAlign: 'left', padding: '10px 12px', border: b.preset === p.id ? '2px solid var(--gold)' : '' },
+      onclick: () => { setBgm('preset', p.id); if (!b.on) setBgm('on', true); },
+    }, h('div', null, h('b', { class: 'ko-serif' }, p.ko), ' ', h('span', null, p.name), h('div', { class: 'small muted' }, p.desc)))))),
+    row(`Volume: ${Math.round(b.volume * 100)}%`, h('input', { type: 'range', min: 0, max: 1, step: 0.05, value: b.volume, oninput: (e) => { update((x) => { x.settings.bgm.volume = Number(e.target.value); }); bgmRefresh(); }, onchange: (e) => setBgm('volume', Number(e.target.value)) })));
 }

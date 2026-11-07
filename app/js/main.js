@@ -1,11 +1,15 @@
 import { h, svg, $, modal } from './lib/dom.js';
 import { loadState, getState, update, save } from './lib/store.js';
-import { initSpeech } from './lib/speech.js';
+import { initSpeech, speechPrefsFrom } from './lib/speech.js';
 import { icon } from './art/icons.js';
 import { jijiSVG } from './art/jiji.js';
 import { VERSION, CHANGELOG } from './version.js';
 import { registerPack } from '../content/index.js';
 import { streakInfo } from './engine/plan.js';
+import { emit } from './lib/bus.js';
+import { initBgm } from './lib/bgm.js';
+import { initCompanion } from './ui/companion.js';
+import { initWordTools } from './ui/wordtools.js';
 
 const SCREENS = {
   home: () => import('./ui/home.js'),
@@ -18,6 +22,7 @@ const SCREENS = {
   story: () => import('./ui/stories.js'),
   speak: () => import('./ui/speak.js'),
   spellbook: () => import('./ui/spellbook.js'),
+  wordbank: () => import('./ui/wordbank.js'),
   ask: () => import('./ui/ask.js'),
   read: () => import('./ui/read.js'),
   settings: () => import('./ui/settings.js'),
@@ -29,6 +34,7 @@ const NAV = [
   ['stories', 'story', 'Stories', '이야기'],
   ['speak', 'mic', 'Speaking', '말하기'],
   ['spellbook', 'spell', 'Spellbook', '단어장'],
+  ['wordbank', 'star', 'Word bank', '내 단어'],
   ['ask', 'chat', 'Ask Jiji', '질문'],
   ['settings', 'gear', 'Settings', '설정'],
 ];
@@ -88,6 +94,7 @@ async function route() {
     const node = await mod.render({ name, params }, { go, onLeave });
     if (token !== routing) return;
     app.replaceChildren(FOCUS.has(name) ? node : shell(name, node));
+    emit('route', name);
     window.scrollTo(0, 0);
     document.title = `${mod.title?.(params) || 'Dalbit'} · 달빛`;
   } catch (err) {
@@ -131,8 +138,11 @@ async function boot() {
   const st = await loadState();
   if (new URLSearchParams(location.search).has('demo')) (await import('./dev.js')).seedDemo();
   applyTheme();
-  initSpeech({ voice: st.settings.voice, rate: st.settings.rate });
+  initSpeech(speechPrefsFrom(st.settings));
   for (const p of Object.values(st.packs || {})) { try { registerPack(p); } catch (e) { console.warn('pack skipped', e); } }
+  initBgm();
+  initCompanion();
+  initWordTools();
   addEventListener('hashchange', route);
   await route();
   whatsNew();

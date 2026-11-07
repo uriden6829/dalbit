@@ -1,4 +1,4 @@
-import { words, phrases, grammar, say } from '../dsl.js';
+import { words, phrases, grammar } from '../dsl.js';
 
 export default {
   id: 'c05',
@@ -75,37 +75,5 @@ export default {
       ],
     },
   ],
-  episode: {
-    id: 'ep05',
-    title: { ko: '김치찌개 한 그릇', en: 'A Bowl of Kimchi Stew' },
-    panels: [
-      { scene: 'street', h: 'M', time: 'dusk', cast: [['me', 0.3, 'smile'], ['minji', 0.66, 'happy', { face: 'left' }]],
-        note: { en: 'Minji finishes her shift and drags you to her favourite stew place.' },
-        lines: [say('minji', '배고파요? 같이 밥 먹어요!', 'Hungry? Let’s eat together!')] },
-      { scene: 'restaurant', h: 'M', cast: [['me', 0.3, 'happy'], ['minji', 0.7, 'smile', { face: 'left' }]],
-        note: { en: 'Small, warm, loud. Perfect.' },
-        signs: [['김치찌개 8,000', 'kimchi stew 8,000 won'], ['된장찌개 8,000', 'soybean-paste stew'], ['비빔밥 9,000', 'bibimbap'], ['불고기 13,000', 'bulgogi']] },
-      { scene: 'restaurant', h: 'M', cast: [['me', 0.3, 'neutral'], ['minji', 0.7, 'talk', { face: 'left', arms: 'wave' }]],
-        lines: [say('minji', '저기요! 김치찌개 2인분 주세요.', 'Excuse me! Kimchi stew for two, please.')] },
-      { scene: 'restaurant', h: 'M', cast: [['me', 0.3, 'think'], ['staff', 0.86, 'smile', { face: 'left' }]],
-        lines: [say('me', '이거 매워요?', 'Is it spicy?'), say('staff', '조금 매워요.', 'A little spicy.')] },
-      { scene: 'restaurant', h: 'M', cast: [['me', 0.3, 'talk'], ['staff', 0.86, 'smile', { face: 'left' }]],
-        lines: [say('me', '덜 맵게 해 주세요.', 'Less spicy, please.'), say('staff', '네, 알겠습니다.', 'Of course.')] },
-      { scene: 'restaurant', h: 'M', cast: [['me', 0.3, 'happy'], ['minji', 0.7, 'happy', { face: 'left' }]],
-        note: { en: 'The stew arrives, bubbling.' },
-        lines: [say('me', '와, 맛있어요!', 'Wow, it’s delicious!'), say('minji', '그렇죠?', 'Right?')] },
-      { scene: 'restaurant', h: 'L', cast: [['jiji', 0.5, 'surprised', { zoom: 2.2 }]],
-        lines: [say('jiji', '생선은 없어요?', 'Is there no fish?'), say('jiji', '', 'Fine. I’ll have the egg roll.')] },
-      { scene: 'restaurant', h: 'M', cast: [['me', 0.3, 'talk'], ['staff', 0.86, 'smile', { face: 'left' }]],
-        lines: [say('me', '계산해 주세요.', 'The bill, please.'), say('staff', '만 육천 원입니다.', 'That’s 16,000 won.')] },
-      { scene: 'street', h: 'M', time: 'night', cast: [['me', 0.3, 'happy'], ['minji', 0.66, 'smile', { face: 'left' }]],
-        lines: [say('me', '잘 먹었습니다!', 'Thank you for the meal!'), say('staff', '또 오세요!', 'Come again!')] },
-    ],
-    quiz: [
-      ['What did they order?', ['Kimchi stew for two', 'Bibimbap', 'Bulgogi', 'Ramyeon'], 0],
-      ['How do you ask for it less spicy?', ['덜 맵게 해 주세요', '이거 매워요?', '맛있어요', '반찬 좀 더 주세요'], 0],
-      ['How much was the bill?', ['16,000 won', '8,000 won', '6,000 won', '60,000 won'], 0],
-      ['What do you say after the meal?', ['잘 먹었습니다', '잘 먹겠습니다', '안녕하세요', '계산해 주세요'], 0],
-    ],
-  },
+  // The webtoon episode for this chapter lives in content/story/season1.js.
 };

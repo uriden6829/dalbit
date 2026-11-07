@@ -64,3 +64,16 @@ reading + speaking focus, story-based memory, periodic recaps.
 
 ## Progress log
 - Run 1: built everything above from an empty folder.
+
+## Task 68 (run 1) — freeze fix + 7 improvements (details: ../68-the-app-is-not-responding-after-she-got-/NOTES.md)
+- FREEZE: tiles exercise "Clear" after grading looped forever (`while (chosen.length) remove(0)` with remove() a no-op
+  once graded). Fixed in ui/study.js; Clear is removed on grading.
+- Voice: neural-voice ranking (Edge names its Korean voices in Hangul: 선히/인준), personas, woman/man alternation, slow
+  mode via engine rate (no chopping). Voice Lab is a babble synth → only its nudge/persona ideas were reused.
+- BGM: Live Studio runtime vendored (app/vendor), 5 presets from tools/build-bgm.mjs, Focus/Story/ducking via bus.js.
+  Verified in headless Edge: worklet mode, plays, follows Focus. Not verified by ear.
+- Jiji corner companion, Shift breakdown + Ctrl+click word bank (morph.js generator + lexicon.js, 100 % coverage).
+- Webtoon v2: app/js/art/toon (characters/scenes/shots), Season 1 "달빛 배달부" in content/story/season1.js (13 eps,
+  ~200 panels), gutter bubbles, tools/toon.mjs (sheet/critique/lab). Old per-chapter episodes removed from chapter files.
+- New state: settings.{maleVoice, voiceMix, slowAll, companion, bgm{on,preset,volume}}, state.wordbank. rate default 1.
+- Not published. Release when ready: node tools/release.mjs "<note>" --minor

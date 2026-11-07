@@ -1,4 +1,4 @@
-import { words, phrases, grammar, say } from '../dsl.js';
+import { words, phrases, grammar } from '../dsl.js';
 
 export default {
   id: 'c02',
@@ -75,34 +75,5 @@ export default {
       ],
     },
   ],
-  episode: {
-    id: 'ep02',
-    title: { ko: '첫 번째 주문', en: 'The First Order' },
-    panels: [
-      { scene: 'street', h: 'M', time: 'day', cast: [['me', 0.35, 'think'], ['jiji', 0.7, 'smug']],
-        note: { en: 'Your first field assignment: order a drink. In Korean.' },
-        lines: [say('jiji', '', 'A simple spell. The thing, the number, 주세요. Go on.')],
-        signs: [['카페', 'café']] },
-      { scene: 'cafe', h: 'M', cast: [['me', 0.28, 'neutral'], ['minji', 0.74, 'smile', { face: 'left' }]],
-        lines: [say('minji', '어서 오세요!', 'Welcome!')], signs: [['메뉴', 'menu'], ['아메리카노 4,500', 'americano 4,500 won'], ['녹차 4,500', 'green tea 4,500 won']] },
-      { scene: 'cafe', h: 'M', cast: [['me', 0.3, 'talk'], ['minji', 0.74, 'smile', { face: 'left' }]],
-        lines: [say('me', '아이스 아메리카노 한 잔 주세요.', 'One iced americano, please.')] },
-      { scene: 'cafe', h: 'M', cast: [['me', 0.3, 'think'], ['minji', 0.74, 'talk', { face: 'left' }]],
-        lines: [say('minji', '여기서 드세요?', 'For here?'), say('me', '네, 여기서 마실게요.', 'Yes, I’ll drink it here.')] },
-      { scene: 'cafe', h: 'M', cast: [['me', 0.3, 'talk'], ['minji', 0.74, 'smile', { face: 'left' }]],
-        lines: [say('minji', '사천오백 원이에요.', 'That’s 4,500 won.'), say('me', '카드 돼요?', 'Can I pay by card?'), say('minji', '네, 돼요!', 'Yes, of course!')] },
-      { scene: 'cafe', h: 'L', cast: [['jiji', 0.42, 'surprised', { zoom: 2.2 }], ['minji', 0.8, 'surprised', { face: 'left' }]],
-        lines: [say('jiji', '저도요! 우유 한 잔 주세요.', 'Me too! A cup of milk, please.'), say('minji', '고양이가… 말해요?!', 'The cat… talks?!')] },
-      { scene: 'cafe', h: 'M', cast: [['me', 0.3, 'smile'], ['minji', 0.74, 'happy', { face: 'left', arms: 'hold' }]],
-        lines: [say('minji', '진동벨 울리면 오세요.', 'Come up when the buzzer goes off.')] },
-      { scene: 'cafe', h: 'M', cast: [['me', 0.3, 'happy', { arms: 'hold', prop: '#7a5236' }], ['minji', 0.74, 'smile', { face: 'left' }]],
-        lines: [say('me', '감사합니다!', 'Thank you!'), say('minji', '맛있게 드세요!', 'Enjoy!')] },
-    ],
-    quiz: [
-      ['What did you order?', ['One iced americano', 'Two hot lattes', 'One green tea', 'A cake'], 0],
-      ['여기서 드세요? means…', ['For here?', 'Is it hot?', 'How many?', 'Card or cash?'], 0],
-      ['What does Jiji order?', ['Milk', 'Coffee', 'Water', 'Cake'], 0],
-      ['How much was the drink?', ['4,500 won', '5,000 won', '4,000 won', '1,500 won'], 0],
-    ],
-  },
+  // The webtoon episode for this chapter lives in content/story/season1.js.
 };

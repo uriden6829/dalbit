@@ -6,8 +6,11 @@ import { similarity, alignSyllables, romanize } from '../lib/hangul.js';
 import { chapters, courseChapters, chapterOf, episodes, items } from '../../content/index.js';
 import { chapterUnlocked, speakingPool } from '../engine/plan.js';
 import { updateSkill, showRoman } from '../engine/adapt.js';
-import { VOICE } from '../art/panel.js';
-import { CAST_NAMES } from '../art/people.js';
+
+import { CAST_NAMES as OLD_NAMES } from '../art/people.js';
+import { FOLK } from '../art/toon/folk.js';
+
+const CAST_NAMES = { ...Object.fromEntries(Object.entries(FOLK).map(([k, v]) => [k, v.name])), ...OLD_NAMES, me: 'You', jiji: '지지' };
 import { jiji, jijiSays, speakBtn, slowBtn, iconEl, backLink } from './common.js';
 
 export const title = () => 'Speaking';
@@ -79,7 +82,7 @@ function runner(ch, lines, { title, roleplay = false, back, markChapter = false 
       h('div', { class: 'muted' }, l.en),
       h('div', { class: 'row', style: { justifyContent: 'center' } }, speakBtn(l.ko), slowBtn(l.ko)));
     host.replaceChildren(card);
-    await speak(l.ko, VOICE[l.who] || {});
+    await speak(l.ko, { who: l.who });
     if (!mine) { card.append(h('div', { class: 'row', style: { justifyContent: 'center' } }, next)); return; }
     if (hasSTT()) {
       const mic = h('button', { class: 'mic-btn', onclick: async () => {

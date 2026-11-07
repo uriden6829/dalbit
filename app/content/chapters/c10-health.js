@@ -1,4 +1,4 @@
-import { words, phrases, grammar, say } from '../dsl.js';
+import { words, phrases, grammar } from '../dsl.js';
 
 export default {
   id: 'c10',
@@ -73,34 +73,5 @@ export default {
       ],
     },
   ],
-  episode: {
-    id: 'ep10',
-    title: { ko: '약국에서', en: 'At the Pharmacy' },
-    panels: [
-      { scene: 'room', h: 'M', cast: [['me', 0.38, 'sick'], ['jiji', 0.75, 'think']],
-        note: { en: 'The morning after the picnic.' },
-        lines: [say('me', '머리가 아파요…', 'My head hurts…'), say('jiji', '', 'Soaked witch, sore throat. Pharmacy. Now.')] },
-      { scene: 'pharmacy', h: 'M', cast: [['me', 0.3, 'sick'], ['pharm', 0.75, 'smile', { face: 'left' }]],
-        signs: [['약국', 'pharmacy'], ['약', 'medicine']],
-        lines: [say('pharm', '어서 오세요. 어디가 아프세요?', 'Hello. Where does it hurt?')] },
-      { scene: 'pharmacy', h: 'M', cast: [['me', 0.3, 'talk'], ['pharm', 0.75, 'think', { face: 'left' }]],
-        lines: [say('me', '감기에 걸렸어요. 목이 아프고 기침이 나요.', 'I caught a cold. My throat hurts and I’m coughing.')] },
-      { scene: 'pharmacy', h: 'M', cast: [['me', 0.3, 'sick'], ['pharm', 0.75, 'talk', { face: 'left' }]],
-        lines: [say('pharm', '열도 있어요?', 'Do you have a fever too?'), say('me', '네, 조금 있어요.', 'Yes, a little.')] },
-      { scene: 'pharmacy', h: 'M', cast: [['me', 0.3, 'neutral'], ['pharm', 0.75, 'talk', { face: 'left', arms: 'hold', prop: '#a9c8d8' }]],
-        lines: [say('pharm', '이 감기약 하루에 세 번 드세요.', 'Take this cold medicine three times a day.'), say('pharm', '식후 삼십 분에 드세요.', 'Thirty minutes after meals.')] },
-      { scene: 'pharmacy', h: 'S', cast: [['me', 0.5, 'think', { zoom: 1.5 }]],
-        lines: [say('me', '', '식후 — after meals. So 식전 must be before meals.')] },
-      { scene: 'pharmacy', h: 'M', cast: [['me', 0.3, 'smile'], ['pharm', 0.75, 'smile', { face: 'left' }]],
-        lines: [say('pharm', '푹 쉬세요. 몸조심하세요.', 'Rest well. Take care of yourself.'), say('me', '감사합니다.', 'Thank you.')] },
-      { scene: 'room', h: 'M', cast: [['me', 0.38, 'sleepy'], ['jiji', 0.75, 'sleepy']],
-        lines: [say('jiji', '오늘은 공부 안 해요. 푹 쉬어요.', 'No studying today. Rest well.')] },
-    ],
-    quiz: [
-      ['What symptoms did she have?', ['A sore throat and a cough', 'A stomach ache', 'A broken arm', 'Only a runny nose'], 0],
-      ['How often should she take the medicine?', ['Three times a day', 'Once a day', 'Every hour', 'Twice a day'], 0],
-      ['식후 means…', ['After meals', 'Before meals', 'Before bed', 'With water'], 0],
-      ['푹 쉬세요 means…', ['Get plenty of rest', 'Eat a lot', 'Come again', 'Go slowly'], 0],
-    ],
-  },
+  // The webtoon episode for this chapter lives in content/story/season1.js.
 };

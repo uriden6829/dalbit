@@ -1,4 +1,4 @@
-import { words, phrases, grammar, say } from '../dsl.js';
+import { words, phrases, grammar } from '../dsl.js';
 
 // A recap chapter: the episode retells everything from chapters 2–10 in the past tense.
 export default {
@@ -76,35 +76,5 @@ export default {
       ],
     },
   ],
-  episode: {
-    id: 'ep11',
-    title: { ko: '교장 선생님께 보고', en: 'A Report to the Headmistress' },
-    panels: [
-      { scene: 'academy', h: 'M', cast: [['head', 0.3, 'smile'], ['me', 0.7, 'smile', { face: 'left' }]],
-        note: { en: 'Moonlight Recap: the headmistress wants to hear about your field work.' },
-        lines: [say('head', '오랜만이에요! 이번 달에 뭐 했어요?', 'Long time no see! What did you do this month?')] },
-      { scene: 'academy', h: 'M', cast: [['me', 0.5, 'talk']],
-        lines: [say('me', '카페에서 아이스 아메리카노를 주문했어요.', 'I ordered an iced americano at a café.'), say('me', '편의점에서 바나나 우유도 샀어요.', 'And I bought banana milk at the convenience store.')] },
-      { scene: 'academy', h: 'M', cast: [['head', 0.3, 'happy'], ['me', 0.7, 'talk', { face: 'left' }]],
-        lines: [say('me', '지하철을 타고 시청역에서 내렸어요.', 'I took the subway and got off at City Hall.')] },
-      { scene: 'academy', h: 'M', cast: [['me', 0.5, 'happy']],
-        lines: [say('me', '친구 집에서 추석 저녁을 먹었어요. 정말 맛있었어요!', 'I had Chuseok dinner at a friend’s home. It was so delicious!')] },
-      { scene: 'academy', h: 'M', cast: [['head', 0.3, 'smile'], ['me', 0.7, 'happy', { face: 'left' }]],
-        lines: [say('me', '시장에서 딸기를 샀어요. 할머니가 덤을 줬어요.', 'I bought strawberries at the market. The grandma gave me a little extra.')] },
-      { scene: 'academy', h: 'M', cast: [['me', 0.5, 'happy']],
-        lines: [say('me', '한강에서 친구하고 피크닉을 했어요. 정말 재미있었어요!', 'I had a picnic by the Han River with a friend. It was so much fun!')] },
-      { scene: 'academy', h: 'M', cast: [['head', 0.3, 'surprised'], ['me', 0.7, 'sad', { face: 'left' }]],
-        lines: [say('me', '그런데 비가 와서 감기에 걸렸어요.', 'But it rained, so I caught a cold.'), say('head', '아이고! 지금은 괜찮아요?', 'Oh dear! Are you all right now?')] },
-      { scene: 'academy', h: 'M', cast: [['head', 0.3, 'happy'], ['me', 0.7, 'smile', { face: 'left' }]],
-        lines: [say('me', '네, 약국에서 약을 사서 푹 쉬었어요.', 'Yes, I bought medicine at the pharmacy and rested well.'), say('head', '정말 잘했어요. 한국어가 많이 늘었네요!', 'Wonderful. Your Korean has really grown!')] },
-      { scene: 'academy', h: 'L', cast: [['jiji', 0.5, 'smug', { zoom: 2.3 }]],
-        lines: [say('jiji', '', 'Every sentence you just said is a spell you learned. That’s what remembering is.')] },
-    ],
-    quiz: [
-      ['Where did she buy strawberries?', ['At the market', 'At the café', 'At the convenience store', 'At the pharmacy'], 0],
-      ['Why did she catch a cold?', ['It rained during the picnic', 'She ate too much', 'She studied too late', 'The subway was cold'], 0],
-      ['재미있었어요 means…', ['It was fun', 'It is fun', 'It will be fun', 'It was boring'], 0],
-      ['Which one is past tense?', ['샀어요', '사요', '살게요', '사고 싶어요'], 0],
-    ],
-  },
+  // The webtoon episode for this chapter lives in content/story/season1.js.
 };

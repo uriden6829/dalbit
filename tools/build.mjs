@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
 const app = resolve(fileURLToPath(new URL('../app/', import.meta.url)));
-const SKIP = new Set(['sw.js', 'files.json']);
+const SKIP = new Set(['sw.js', 'files.json', 'toonlab.html', 'js/art/toon/lab.js']);
 
 function walk(dir) {
   return readdirSync(dir).flatMap((f) => {

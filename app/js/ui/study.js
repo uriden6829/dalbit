@@ -8,6 +8,7 @@ import { Session } from '../engine/session.js';
 import { dailySession, lessonSession, reviewSession, recapSession, examSession, trickySession, lessonStats, chapterNodes } from '../engine/plan.js';
 import { items, lessons, chapterOf, courseChapters } from '../../content/index.js';
 import { showRoman } from '../engine/adapt.js';
+import { emit } from '../lib/bus.js';
 import { speakBtn, slowBtn, jiji, line, romanLine, pronLine, moonEl, iconEl } from './common.js';
 
 export const title = (p) => ({ daily: 'Tonight’s study', lesson: 'Lesson', review: 'Review', recap: 'Moonlight Recap', exam: 'Exam', tricky: 'Tricky words' }[p[0]] || 'Study');
@@ -66,6 +67,7 @@ export function render({ params }, { go, onLeave }) {
     stage.replaceChildren();
     stage.style.animation = 'none'; void stage.offsetWidth; stage.style.animation = '';
     exStart = performance.now();
+    emit('exercise', ex);
     const view = VIEWS[ex.type];
     view(ex, { stage, roman, setKeys, done: (result) => answered(ex, result), session });
   }
@@ -73,7 +75,7 @@ export function render({ params }, { go, onLeave }) {
   function answered(ex, result) {
     const ms = performance.now() - exStart;
     const res = session.answer(ex, { ...result, ms });
-    if (ex.type !== 'intro') logActivity({ ex: 1, ok: result.correct ? 1 : 0, ms, learned: res.graduated ? 1 : 0 });
+    if (ex.type !== 'intro') { logActivity({ ex: 1, ok: result.correct ? 1 : 0, ms, learned: res.graduated ? 1 : 0 }); emit('answer', { correct: !!result.correct, graduated: !!res.graduated, skipped: !!result.skipped }); }
     if (ex.type === 'intro' || result.silent) return next();
     showFeedback(ex, result, res);
   }
@@ -89,7 +91,7 @@ export function render({ params }, { go, onLeave }) {
       h('div', null,
         h('div', { class: 'fb-title' }, result.skipped ? 'Skipped for now' : ok ? (res.graduated ? `${line('correct')} ${line('graduated')}` : line('correct')) : line('wrong')),
         !ok && ex.type === 'choice' && ex.options[ex.answer] ? h('div', null, 'Answer: ', h('b', { class: /[가-힣]/.test(ex.options[ex.answer].text) ? 'ko' : '' }, ex.options[ex.answer].text)) : null,
-        ko && /[가-힣]/.test(ko) ? h('div', { class: 'row', style: { gap: '8px' } }, h('span', { class: 'fb-ko' }, ko), speakBtn(ko)) : null,
+        ko && /[가-힣]/.test(ko) ? h('div', { class: 'row', style: { gap: '8px' } }, h('span', { class: 'fb-ko' }, ko), speakBtn(ko), slowBtn(ko)) : null,
         ko && /[가-힣]/.test(ko) && (roman || !ok) ? h('div', { class: 'fb-roman' }, romanize(ko)) : null,
         en ? h('div', { class: 'fb-en' }, en) : null),
       h('button', { class: 'btn primary', onclick: next, autofocus: true }, 'Continue ', iconEl('arrow', 16)));
@@ -100,6 +102,7 @@ export function render({ params }, { go, onLeave }) {
 
   function finish() {
     setKeys(null);
+    emit('session-end', { kind });
     const s = session.stats;
     const mins = Math.max(1, Math.round((Date.now() - s.started) / 60000));
     const acc = s.ex ? Math.round((s.ok / s.ex) * 100) : 0;
@@ -255,10 +258,13 @@ function tilesView(ex, { stage, setKeys, done }) {
   bank.append(...btns);
   const check = h('button', { class: 'btn primary', disabled: true, onclick: () => grade() }, 'Check');
   const listenBtn = speakBtn(items.get(ex.item).ko);
+  // Clearing is a no-op once graded (remove() bails out), so it must not loop on `chosen.length`:
+  // that infinite loop froze the app when she pressed Clear after a wrong answer.
+  const clear = h('button', { class: 'btn ghost small', onclick: () => { if (finished) return; chosen.length = 0; redraw(); } }, 'Clear');
   stage.append(h('div', { class: 'ask center' }, ex.prompt.ask),
     h('div', { class: 'prompt' }, h('div', { class: 'en-big' }, ex.prompt.en)),
     answerEl, bank,
-    h('div', { class: 'row', style: { justifyContent: 'center' } }, h('button', { class: 'btn ghost small', onclick: () => { while (chosen.length) remove(0); } }, 'Clear'), check));
+    h('div', { class: 'row', style: { justifyContent: 'center' } }, clear, check));
   let finished = false;
   function redraw() {
     answerEl.replaceChildren(...chosen.map((i, k) => h('button', { class: `tilebtn ${isWord ? 'word' : ''}`, onclick: () => remove(k) }, ex.tiles[i])));
@@ -276,6 +282,7 @@ function tilesView(ex, { stage, setKeys, done }) {
     answerEl.style.borderColor = correct ? 'var(--sage)' : 'var(--rose)';
     if (!correct) answerEl.append(h('div', { class: 'small muted', style: { width: '100%', textAlign: 'center' } }, 'You built: ', got));
     check.remove();
+    clear.remove();
     stage.querySelector('.tiles-bank').replaceChildren(listenBtn);
     done({ correct });
   }

@@ -1,4 +1,4 @@
-import { words, phrases, grammar, say } from '../dsl.js';
+import { words, phrases, grammar } from '../dsl.js';
 
 export default {
   id: 'c04',
@@ -74,35 +74,5 @@ export default {
       ],
     },
   ],
-  episode: {
-    id: 'ep04',
-    title: { ko: '지하의 미로', en: 'The Underground Maze' },
-    panels: [
-      { scene: 'subway', h: 'M', cast: [['me', 0.38, 'think'], ['jiji', 0.7, 'idle']],
-        note: { en: 'The academy has sent you across the city with a parcel. Line 2, the green one.' },
-        signs: [['시청', 'City Hall'], ['을지로입구', 'Euljiro 1-ga'], ['동대문', 'Dongdaemun'], ['성수', 'Seongsu']] },
-      { scene: 'subway', h: 'M', cast: [['me', 0.38, 'surprised'], ['jiji', 0.7, 'surprised']],
-        lines: [say('woman', '이번 역은 시청, 시청역입니다.', 'This stop is City Hall.'), say('jiji', '내려요! 여기서 내려요!', 'Get off! We get off here!')] },
-      { scene: 'subway', h: 'M', cast: [['me', 0.3, 'talk'], ['man', 0.72, 'neutral', { face: 'left' }]],
-        lines: [say('me', '저기요, 3번 출구가 어디예요?', 'Excuse me, where is exit 3?'), say('man', '저기 오른쪽이에요.', 'Over there on the right.')] },
-      { scene: 'subway', h: 'S', cast: [['me', 0.3, 'happy'], ['man', 0.72, 'smile', { face: 'left', arms: 'point' }]],
-        lines: [say('me', '감사합니다!', 'Thank you!')] },
-      { scene: 'street', h: 'M', time: 'night', cast: [['me', 0.3, 'talk', { arms: 'wave' }], ['jiji', 0.6, 'sad']],
-        note: { en: 'Outside it’s dark, and much too far to walk.' },
-        lines: [say('me', '택시!', 'Taxi!')] },
-      { scene: 'taxi', h: 'M', cast: [['driver', 0.3, 'smile'], ['me', 0.7, 'talk', { face: 'left' }]],
-        lines: [say('driver', '어디로 가세요?', 'Where to?'), say('me', '서촌으로 가 주세요.', 'To Seochon, please.')] },
-      { scene: 'taxi', h: 'M', cast: [['driver', 0.3, 'neutral'], ['me', 0.7, 'talk', { face: 'left' }]],
-        note: { en: 'Twenty minutes later.' },
-        lines: [say('me', '여기서 세워 주세요.', 'Please stop here.'), say('driver', '네, 사천팔백 원입니다.', 'Okay, that’s 4,800 won.')] },
-      { scene: 'street', h: 'M', time: 'night', cast: [['me', 0.32, 'happy'], ['jiji', 0.68, 'smug']],
-        lines: [say('jiji', '', 'One subway, one exit, one taxi, zero tears. Not bad for a first-year.')] },
-    ],
-    quiz: [
-      ['Where did they get off the subway?', ['City Hall', 'Dongdaemun', 'Seongsu', 'Seoul Station'], 0],
-      ['Where was exit 3?', ['Over there on the right', 'Straight ahead', 'On the left', 'Behind them'], 0],
-      ['How do you tell a taxi driver where to go?', ['서촌으로 가 주세요', '서촌이 어디예요?', '서촌에 있어요', '서촌 주세요'], 0],
-      ['여기서 세워 주세요 means…', ['Please stop here', 'Please go straight', 'Please hurry', 'Please turn right'], 0],
-    ],
-  },
+  // The webtoon episode for this chapter lives in content/story/season1.js.
 };

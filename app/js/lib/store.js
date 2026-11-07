@@ -15,7 +15,8 @@ export function defaultState() {
       look: { hair: 'bob', hairColor: '#3b2a22', skin: '#f2d3bd', coat: '#e9dcc4' },
     },
     settings: {
-      minutes: 15, newPerDay: 10, romanization: 'auto', theme: 'auto', voice: '', rate: 0.9,
+      minutes: 15, newPerDay: 10, romanization: 'auto', theme: 'auto', voice: '', rate: 1, maleVoice: '', voiceMix: true, slowAll: false,
+      companion: true, bgm: { on: true, preset: 'moonlit', volume: 0.45 },
       speaking: true, storyEnglish: false, autoplay: true, sound: true,
     },
     placement: null,      // { theta, se, level, skills, startChapter, at, history: [] }
@@ -29,6 +30,7 @@ export function defaultState() {
     ai: { mode: 'off', model: '', web: true },
     packs: {},            // AI-made lesson packs / episodes (validated data)
     chat: [],             // recent Ask-Jiji messages
+    wordbank: [],         // words she saved: { ko, en, surface, ctx, ctxEn, at, box, due }
     meta: { lastVersion: '', lastBackup: 0 },
   };
 }

@@ -419,3 +419,89 @@ input[type=range] { width: 100%; accent-color: var(--gold); }
   radial-gradient(1px 1px at 30% 80%, #fff, transparent), radial-gradient(1px 1px at 90% 85%, #fff, transparent), radial-gradient(1.2px 1.2px at 45% 15%, #fff, transparent); }
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+/* ---------- Jiji's corner (companion) ---------- */
+.companion { position: fixed; right: 14px; bottom: 10px; z-index: 60; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; pointer-events: none; }
+.companion > * { pointer-events: auto; }
+.companion.hidden { display: none; }
+.cmp-row { display: flex; align-items: flex-end; gap: 6px; }
+.cmp-cat { background: radial-gradient(circle at 50% 62%, color-mix(in srgb, var(--gold-2) 30%, transparent) 0, transparent 62%); border: 0; padding: 4px 2px 0; cursor: pointer; line-height: 0; filter: drop-shadow(0 4px 8px rgba(0,0,0,.18)); border-radius: 50%; }
+.cmp-cat .jiji { display: block; }
+.cmp-cat.hop { animation: hop .5s ease; }
+@keyframes hop { 30% { transform: translateY(-10px) rotate(-3deg); } 60% { transform: translateY(0); } 80% { transform: translateY(-3px); } }
+.cmp-cat .tail { transform-origin: 76px 136px; animation: swish 4.5s ease-in-out infinite; }
+@keyframes swish { 0%, 100% { transform: rotate(0); } 50% { transform: rotate(-9deg); } }
+.cmp-cat .eyes { transform-origin: 60px 77px; animation: blink 5.5s infinite; }
+@keyframes blink { 0%, 95%, 100% { transform: scaleY(1); } 97% { transform: scaleY(.1); } }
+.cmp-cat.ears .head { animation: ear .6s ease-in-out infinite alternate; transform-origin: 60px 90px; }
+@keyframes ear { to { transform: rotate(2deg); } }
+.cmp-bubble { max-width: 240px; background: var(--card); color: var(--ink); border: 1px solid var(--line-2); border-radius: 14px 14px 4px 14px; padding: 8px 12px; font-size: .88rem;
+  box-shadow: var(--shadow, 0 6px 20px rgba(0,0,0,.12)); opacity: 0; transform: translateY(6px); transition: opacity .25s, transform .25s; pointer-events: none; margin-right: 20px; }
+.cmp-bubble.show { opacity: 1; transform: none; }
+.cmp-tools { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; opacity: .55; transition: opacity .2s; }
+.companion:hover .cmp-tools, .cmp-tools:focus-within, .cmp-tools .on { opacity: 1; }
+.cmp-tool { width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--line-2); background: var(--card); color: var(--ink-2); display: grid; place-items: center; cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,.08); }
+.cmp-tool .glyph { font-weight: 800; font-size: 1rem; line-height: 1; }
+.cmp-tool:hover { border-color: var(--gold); color: var(--ink); }
+.cmp-tool.on { background: var(--gold-2); border-color: var(--gold); color: #1d1b33; }
+.cmp-music { position: relative; }
+.cmp-menu { display: none; position: absolute; right: 44px; bottom: 0; width: 230px; background: var(--card); border: 1px solid var(--line-2); border-radius: 14px; padding: 12px; box-shadow: var(--shadow-lg, 0 10px 30px rgba(0,0,0,.2)); gap: 6px; flex-direction: column; }
+.cmp-menu.show { display: flex; }
+.cmp-mood { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; background: none; border: 1px solid transparent; border-radius: 10px; padding: 6px 8px; cursor: pointer; color: var(--ink); text-align: left; }
+.cmp-mood:hover { border-color: var(--line-2); }
+.cmp-mood.on { border-color: var(--gold); background: var(--gold-soft); }
+.companion[data-route="study"] .cmp-cat .jiji, .companion[data-route="placement"] .cmp-cat .jiji { width: 62px; height: 78px; }
+@media (max-width: 899px) { .companion { bottom: 74px; right: 8px; } .cmp-cat .jiji { width: 56px; height: 70px; } }
+.page, .session { padding-bottom: 40px; }
+
+/* ---------- Word tools: breakdown + picker ---------- */
+.wt-hl { position: fixed; inset: 0; pointer-events: none; z-index: 90; }
+.wt-hl i { position: fixed; border-radius: 6px; }
+.wt-hl i.seg { background: color-mix(in srgb, var(--gold-2) 22%, transparent); }
+.wt-hl i.word { background: color-mix(in srgb, var(--gold-2) 45%, transparent); box-shadow: 0 0 0 1.5px var(--gold); }
+.wt-hl i.word.pick { background: color-mix(in srgb, var(--sage) 25%, transparent); box-shadow: 0 0 0 1.5px var(--sage); }
+.wt-hl i.saved { background: color-mix(in srgb, var(--sage) 45%, transparent) !important; transition: background .2s; }
+.wt-tip { position: fixed; z-index: 95; background: var(--card); color: var(--ink); border: 1px solid var(--line-2); border-radius: 14px; padding: 10px 14px; box-shadow: 0 12px 34px rgba(0,0,0,.22);
+  display: none; gap: 6px; flex-direction: column; font-size: .92rem; pointer-events: none; }
+.wt-tip.show { display: flex; }
+.wt-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.wt-head b { font-size: 1.35rem; }
+.wt-en { font-weight: 600; }
+.wt-parts { font-size: .86rem; color: var(--ink-2); line-height: 1.7; }
+.wt-parts .part { white-space: nowrap; background: var(--paper-2); border-radius: 6px; padding: 1px 6px; }
+.wt-expr { font-size: .86rem; border-left: 3px solid var(--gold-2); padding-left: 8px; }
+.wt-keys { color: var(--muted); border-top: 1px dashed var(--line-2); padding-top: 5px; }
+body.wt-breakdown, body.wt-picking { cursor: help; }
+body.wt-picking { cursor: copy; }
+body.wt-breakdown .ko, body.wt-breakdown [data-ko] { user-select: none; }
+
+/* ---------- Word bank ---------- */
+.wb-how { padding: 14px 18px; }
+.wb-list { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+.wb-card { gap: 6px; display: flex; flex-direction: column; padding: 14px 16px; }
+.wb-ko { font-size: 1.5rem; font-weight: 600; }
+.wb-en-in { border: 1px dashed transparent; background: transparent; padding: 3px 6px; margin-left: -6px; font-weight: 600; color: var(--ink); }
+.wb-en-in:hover, .wb-en-in:focus { border-color: var(--line-2); background: var(--card-2); }
+.wb-ctx { font-size: .9rem; border-left: 3px solid var(--line-2); padding-left: 10px; color: var(--ink-2); }
+
+/* ---------- Webtoon reader v2 (season files): gutter bubbles, captions, pacing ---------- */
+.toon { max-width: 560px; gap: 0; }
+.toon > .toon-tools { margin: 6px 0 18px; }
+.tp { display: flex; flex-direction: column; margin-top: 18px; }
+.tp.tp-gap { margin-top: 64px; }
+.tp-establish .tp-art, .tp-flight .tp-art { border-radius: 2px; }
+.tp-art { position: relative; overflow: hidden; border-radius: 4px; box-shadow: 0 10px 30px rgba(20, 18, 40, .22); background: #1b1d3a; }
+.tp-art > svg { display: block; width: 100%; height: 100%; }
+.tp-close .tp-art { margin: 0 6%; }
+.tp-detail .tp-art { margin: 0 10%; transform: rotate(-.6deg); }
+.tp-cap { align-self: flex-start; position: relative; z-index: 2; margin: 0 0 -14px 10px; max-width: 86%; background: #f8f0de; color: #2f2a3c;
+  border: 1px solid #dccaa6; padding: 8px 13px; font-family: var(--f-display); font-style: italic; font-size: 1.04rem; line-height: 1.38; box-shadow: 0 3px 10px rgba(0,0,0,.18); }
+.tp-talk { display: flex; flex-direction: column; gap: 10px; margin-top: -16px; padding: 0 4px; position: relative; z-index: 2; }
+.tp-talk .tb { max-width: 82%; padding: 10px 16px 11px; }
+.tp-talk .tb .t-ko { font-size: 1.16rem; }
+.tp-talk .tb::after { bottom: auto; top: -9px; transform: rotate(225deg) skew(8deg, 8deg); }
+.tp-talk .tb + .tb::after { display: none; }
+.tp-talk .tb.en-only { background: #f4f1fb; border-style: dashed; }
+.tp-talk .tb.en-only.cat, .tp-talk .tb.cat { background: #2a2738; }
+.tp .signs { margin-top: 10px; }
+

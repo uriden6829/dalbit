@@ -1,4 +1,4 @@
-import { words, phrases, grammar, say } from '../dsl.js';
+import { words, phrases, grammar } from '../dsl.js';
 
 export default {
   id: 'c07',
@@ -75,31 +75,5 @@ export default {
       ],
     },
   ],
-  episode: {
-    id: 'ep07',
-    title: { ko: '토요일 세 시', en: 'Saturday at Three' },
-    panels: [
-      { scene: 'room', h: 'M', cast: [['me', 0.35, 'neutral', { arms: 'phone' }], ['jiji', 0.75, 'sleepy']],
-        note: { en: 'A message from Minji.' },
-        lines: [say('minji', '내일 시간 있어요?', 'Are you free tomorrow?')] },
-      { scene: 'room', h: 'M', cast: [['me', 0.4, 'talk', { arms: 'phone' }]],
-        lines: [say('me', '내일은 수업이 있어요. 왜요?', 'I have class tomorrow. Why?'), say('minji', '그럼 주말에 뭐 해요?', 'Then what are you doing this weekend?')] },
-      { scene: 'room', h: 'M', cast: [['me', 0.4, 'happy', { arms: 'phone' }]],
-        lines: [say('me', '아무것도 안 해요!', 'Nothing!'), say('minji', '한강에 같이 갈래요? 피크닉!', 'Want to go to the Han River together? A picnic!')] },
-      { scene: 'room', h: 'M', cast: [['me', 0.4, 'talk', { arms: 'phone' }]],
-        lines: [say('me', '좋아요! 몇 시에 만날까요?', 'Sounds good! What time shall we meet?'), say('minji', '토요일 세 시 어때요?', 'How about Saturday at three?')] },
-      { scene: 'room', h: 'L', cast: [['jiji', 0.5, 'think', { zoom: 2.3 }]],
-        lines: [say('jiji', '', 'Three o’clock is 세 시 — native number. Say 삼 시 and the whole city will know you’re a first-year.')] },
-      { scene: 'room', h: 'M', cast: [['me', 0.4, 'talk', { arms: 'phone' }]],
-        lines: [say('me', '토요일 세 시, 좋아요. 어디에서 만나요?', 'Saturday at three, great. Where do we meet?'), say('minji', '여의나루역 2번 출구에서 만나요!', 'Let’s meet at Yeouinaru Station, exit 2!')] },
-      { scene: 'room', h: 'M', cast: [['me', 0.35, 'happy', { arms: 'phone' }], ['jiji', 0.72, 'happy']],
-        lines: [say('me', '네, 그때 봐요!', 'Okay, see you then!'), say('jiji', '저도 가고 싶어요. 치킨 먹고 싶어요.', 'I want to go too. I want to eat chicken.')] },
-    ],
-    quiz: [
-      ['When will they meet?', ['Saturday at 3', 'Sunday at 3', 'Saturday at 2', 'Friday at 3'], 0],
-      ['Where will they meet?', ['Yeouinaru Station, exit 2', 'City Hall, exit 3', 'Seoul Station', 'The café'], 0],
-      ['Why is 삼 시 wrong?', ['Hours use native numbers (세 시)', '삼 means four', '시 needs 분', 'It is too formal'], 0],
-      ['What does Jiji want to eat?', ['Chicken', 'Fish', 'Kimchi stew', 'Cake'], 0],
-    ],
-  },
+  // The webtoon episode for this chapter lives in content/story/season1.js.
 };

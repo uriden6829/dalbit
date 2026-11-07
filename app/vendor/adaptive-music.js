@@ -1,0 +1,4570 @@
+/* Vendored into Dalbit from the Live Studio (task 34 dist/adaptive-music.js). Dalbit patches: opts.workletUrl (static worklet file, keeps the CSP strict) and engineSource export (tools/build-bgm.mjs writes am-worklet.js from it).
+ * Adaptive Music runtime v1.0 (built 2026-10-31)
+ * Plays presets made in the Adaptive Music Studio. Usage:
+ *   const music = await AdaptiveMusic.create({ preset });   // preset = the exported .json (object or text)
+ *   button.onclick = () => music.start();                   // audio needs a user gesture
+ *   music.set("Time of day", 18.5); music.event("Enter combat"); music.stop(2);
+ */
+(function (root) {
+'use strict';
+var MODULES = [
+(function (DM) {
+  'use strict';
+  var TAU = Math.PI * 2;
+
+  // ---------- deterministic RNG (mulberry32) ----------
+  function Rng(seed) { this.s = (seed >>> 0) || 0x9e3779b9; }
+  Rng.prototype.next = function () {
+    var t = (this.s = (this.s + 0x6D2B79F5) >>> 0);
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  Rng.prototype.range = function (a, b) { return a + (b - a) * this.next(); };
+  Rng.prototype.int = function (a, b) { return a + Math.floor(this.next() * (b - a + 1)); };
+  Rng.prototype.pick = function (arr) { return arr[Math.floor(this.next() * arr.length)]; };
+  Rng.prototype.bipolar = function () { return this.next() * 2 - 1; };
+  Rng.prototype.weighted = function (weights) {
+    var sum = 0, i;
+    for (i = 0; i < weights.length; i++) sum += Math.max(0, weights[i]);
+    var r = this.next() * sum;
+    for (i = 0; i < weights.length; i++) { r -= Math.max(0, weights[i]); if (r < 0) return i; }
+    return weights.length - 1;
+  };
+  DM.Rng = Rng;
+  DM.hashString = function (str) {
+    var h = 2166136261;
+    for (var i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
+    return h >>> 0;
+  };
+
+  // ---------- math helpers ----------
+  DM.clamp = function (x, a, b) { return x < a ? a : x > b ? b : x; };
+  DM.mtof = function (m) { return 440 * Math.pow(2, (m - 69) / 12); };
+  DM.dbToGain = function (db) { return Math.pow(10, db / 20); };
+  DM.gainToDb = function (g) { return 20 * Math.log10(Math.max(1e-9, g)); };
+  // equal-power pan: returns [gL, gR]
+  DM.panGains = function (pan) {
+    var p = (DM.clamp(pan, -1, 1) + 1) * 0.25 * Math.PI;
+    return [Math.cos(p), Math.sin(p)];
+  };
+
+  // ---------- sine table ----------
+  var SINE_N = 4096;
+  var SINE = new Float32Array(SINE_N + 1);
+  for (var i = 0; i <= SINE_N; i++) SINE[i] = Math.sin(TAU * i / SINE_N);
+  // phase in cycles [0,1)
+  DM.fsin = function (phase) {
+    var x = (phase - Math.floor(phase)) * SINE_N;
+    var j = x | 0;
+    var f = x - j;
+    return SINE[j] + (SINE[j + 1] - SINE[j]) * f;
+  };
+
+  function polyblep(t, dt) {
+    if (t < dt) { t /= dt; return t + t - t * t - 1; }
+    if (t > 1 - dt) { t = (t - 1) / dt; return t * t + t + t + 1; }
+    return 0;
+  }
+  // band-limited oscillator step. state = {phase}; returns sample
+  DM.osc = function (shape, phase, dt, duty) {
+    switch (shape) {
+      case 'sine': return DM.fsin(phase);
+      case 'triangle': {
+        var tri = phase < 0.5 ? 4 * phase - 1 : 3 - 4 * phase;
+        return tri;
+      }
+      case 'saw': return 2 * phase - 1 - polyblep(phase, dt);
+      case 'square':
+      case 'pulse': {
+        var d = duty || 0.5;
+        var v = phase < d ? 1 : -1;
+        v += polyblep(phase, dt);
+        var p2 = phase - d; if (p2 < 0) p2 += 1;
+        v -= polyblep(p2, dt);
+        return v;
+      }
+      default: return DM.fsin(phase);
+    }
+  };
+
+  // ---------- noise ----------
+  function Noise(rng) {
+    this.rng = rng; this.b0 = 0; this.b1 = 0; this.b2 = 0; this.b3 = 0; this.b4 = 0; this.b5 = 0; this.b6 = 0; this.brown = 0;
+  }
+  Noise.prototype.white = function () { return this.rng.next() * 2 - 1; };
+  Noise.prototype.pink = function () {
+    var w = this.rng.next() * 2 - 1;
+    this.b0 = 0.99886 * this.b0 + w * 0.0555179; this.b1 = 0.99332 * this.b1 + w * 0.0750759;
+    this.b2 = 0.96900 * this.b2 + w * 0.1538520; this.b3 = 0.86650 * this.b3 + w * 0.3104856;
+    this.b4 = 0.55000 * this.b4 + w * 0.5329522; this.b5 = -0.7616 * this.b5 - w * 0.0168980;
+    var out = this.b0 + this.b1 + this.b2 + this.b3 + this.b4 + this.b5 + this.b6 + w * 0.5362;
+    this.b6 = w * 0.115926;
+    return out * 0.11;
+  };
+  Noise.prototype.brownian = function () {
+    var w = this.rng.next() * 2 - 1;
+    this.brown = (this.brown + 0.02 * w) / 1.02;
+    return this.brown * 3.5;
+  };
+  DM.Noise = Noise;
+
+  // ---------- ADSR envelope (linear attack, exponential decay/release) ----------
+  function Env(sr, a, d, s, r) {
+    this.sr = sr; this.set(a, d, s, r);
+    this.level = 0; this.stage = 1; // 1 attack, 2 decay/sustain, 3 release, 0 done
+  }
+  Env.prototype.set = function (a, d, s, r) {
+    var sr = this.sr;
+    this.aInc = 1 / Math.max(1, (a || 0.001) * sr);
+    this.dCoef = Math.exp(-4.6 / Math.max(1, (d || 0.001) * sr));
+    this.s = s == null ? 1 : s;
+    this.rCoef = Math.exp(-4.6 / Math.max(1, (r || 0.001) * sr));
+  };
+  Env.prototype.release = function () { if (this.stage !== 0) this.stage = 3; };
+  Env.prototype.next = function () {
+    switch (this.stage) {
+      case 1:
+        this.level += this.aInc;
+        if (this.level >= 1) { this.level = 1; this.stage = 2; }
+        break;
+      case 2:
+        this.level = this.s + (this.level - this.s) * this.dCoef;
+        break;
+      case 3:
+        this.level *= this.rCoef;
+        if (this.level < 1e-4) { this.level = 0; this.stage = 0; }
+        break;
+    }
+    return this.level;
+  };
+  DM.Env = Env;
+
+  // ---------- TPT state variable filter (Zavalishin) ----------
+  function SVF(sr) { this.sr = sr; this.ic1 = 0; this.ic2 = 0; this.fc = -1; this.q = -1; this.set(1000, 0.707); }
+  SVF.prototype.set = function (fc, q) {
+    fc = DM.clamp(fc, 10, this.sr * 0.45);
+    if (fc === this.fc && q === this.q) return;
+    this.fc = fc; this.q = q;
+    var g = Math.tan(Math.PI * fc / this.sr);
+    var k = 1 / Math.max(0.05, q);
+    this.k = k;
+    this.a1 = 1 / (1 + g * (g + k));
+    this.a2 = g * this.a1;
+    this.a3 = g * this.a2;
+  };
+  // mode: 0 low, 1 band, 2 high, 3 notch
+  SVF.prototype.process = function (v0, mode) {
+    var v3 = v0 - this.ic2;
+    var v1 = this.a1 * this.ic1 + this.a2 * v3;
+    var v2 = this.ic2 + this.a2 * this.ic1 + this.a3 * v3;
+    this.ic1 = 2 * v1 - this.ic1;
+    this.ic2 = 2 * v2 - this.ic2;
+    if (mode === 1) return v1;
+    if (mode === 2) return v0 - this.k * v1 - v2;
+    if (mode === 3) return v0 - this.k * v1;
+    return v2;
+  };
+  DM.SVF = SVF;
+
+  // one-pole lowpass smoother
+  function OnePole(sr, fc) { this.z = 0; this.setFc(sr, fc); }
+  OnePole.prototype.setFc = function (sr, fc) { this.a = Math.exp(-TAU * DM.clamp(fc, 1, sr * 0.49) / sr); };
+  OnePole.prototype.process = function (x) { this.z = x + (this.z - x) * this.a; return this.z; };
+  DM.OnePole = OnePole;
+
+  // ---------- FDN reverb (8 lines, Hadamard feedback, damping, input diffusion) ----------
+  var FDN_LENS = [1559, 1617, 1491, 1422, 1277, 1356, 1188, 1116];
+  var AP_LENS = [225, 341, 441, 556];
+  function Reverb(sr, opts) {
+    opts = opts || {};
+    this.sr = sr;
+    var scale = sr / 44100 * (opts.size || 1);
+    this.lines = []; this.idx = []; this.lp = []; this.lens = [];
+    for (var i = 0; i < 8; i++) {
+      var n = Math.max(64, Math.round(FDN_LENS[i] * scale * 1.6));
+      this.lines.push(new Float32Array(n)); this.idx.push(0); this.lp.push(0); this.lens.push(n);
+    }
+    this.ap = []; this.apIdx = [];
+    for (var j = 0; j < AP_LENS.length; j++) {
+      this.ap.push(new Float32Array(Math.round(AP_LENS[j] * sr / 44100))); this.apIdx.push(0);
+    }
+    var pre = Math.max(1, Math.round((opts.predelay == null ? 0.02 : opts.predelay) * sr));
+    this.pre = new Float32Array(pre); this.preIdx = 0;
+    this.tmp = new Float64Array(8);
+    this.setDecay(opts.decay || 3.0, opts.damping == null ? 0.35 : opts.damping);
+  }
+  Reverb.prototype.setDecay = function (t60, damping) {
+    this.t60 = t60; this.damping = damping;
+    this.g = [];
+    for (var i = 0; i < 8; i++) this.g.push(Math.pow(10, -3 * this.lens[i] / (Math.max(0.1, t60) * this.sr)));
+    this.damp = DM.clamp(damping, 0, 0.95);
+  };
+  Reverb.prototype.process = function (inL, inR, outL, outR, n) {
+    var lines = this.lines, idx = this.idx, lens = this.lens, g = this.g, lp = this.lp, damp = this.damp, tmp = this.tmp;
+    var pre = this.pre, ap = this.ap, apIdx = this.apIdx;
+    for (var s = 0; s < n; s++) {
+      // pre-delay
+      var x = (inL[s] + inR[s]) * 0.5;
+      var pd = pre[this.preIdx]; pre[this.preIdx] = x; this.preIdx = (this.preIdx + 1) % pre.length;
+      // input diffusion
+      var d = pd;
+      for (var a = 0; a < ap.length; a++) {
+        var buf = ap[a], k = apIdx[a];
+        var bo = buf[k];
+        var v = d + 0.6 * bo;
+        buf[k] = v;
+        d = bo - 0.6 * v;
+        apIdx[a] = (k + 1) % buf.length;
+      }
+      // read lines
+      for (var i = 0; i < 8; i++) {
+        var y = lines[i][idx[i]];
+        lp[i] = y + (lp[i] - y) * damp;
+        tmp[i] = lp[i] * g[i];
+      }
+      var oL = tmp[0] - tmp[2] + tmp[4] - tmp[6];
+      var oR = tmp[1] - tmp[3] + tmp[5] - tmp[7];
+      // fast Walsh-Hadamard (8)
+      for (var h = 1; h < 8; h <<= 1) {
+        for (var b = 0; b < 8; b += h << 1) {
+          for (var c = b; c < b + h; c++) {
+            var u = tmp[c], w = tmp[c + h];
+            tmp[c] = u + w; tmp[c + h] = u - w;
+          }
+        }
+      }
+      var norm = 0.35355339059327373; // 1/sqrt(8)
+      for (i = 0; i < 8; i++) {
+        var inj = (i & 1) ? -d : d;
+        lines[i][idx[i]] = tmp[i] * norm + inj * 0.35;
+        idx[i] = idx[i] + 1; if (idx[i] >= lens[i]) idx[i] = 0;
+      }
+      outL[s] += oL * 0.5;
+      outR[s] += oR * 0.5;
+    }
+  };
+  DM.Reverb = Reverb;
+
+  // ---------- stereo ping-pong delay ----------
+  function Delay(sr, maxSec) {
+    this.sr = sr;
+    this.n = Math.ceil((maxSec || 3) * sr);
+    this.L = new Float32Array(this.n); this.R = new Float32Array(this.n);
+    this.w = 0; this.time = 0.4; this.fb = 0.35; this.lpL = 0; this.lpR = 0; this.tone = 0.3;
+  }
+  Delay.prototype.set = function (timeSec, feedback, tone) {
+    this.time = DM.clamp(timeSec, 0.01, this.n / this.sr - 0.01);
+    this.fb = DM.clamp(feedback, 0, 0.95);
+    if (tone != null) this.tone = DM.clamp(tone, 0, 0.95);
+  };
+  Delay.prototype.process = function (inL, inR, outL, outR, n) {
+    var d = Math.round(this.time * this.sr), N = this.n, L = this.L, R = this.R, fb = this.fb, tone = this.tone;
+    for (var s = 0; s < n; s++) {
+      var r = this.w - d; if (r < 0) r += N;
+      var yl = L[r], yr = R[r];
+      this.lpL = yl + (this.lpL - yl) * tone;
+      this.lpR = yr + (this.lpR - yr) * tone;
+      // ping-pong: left feeds right
+      L[this.w] = (inL[s] + inR[s]) * 0.5 + this.lpR * fb;
+      R[this.w] = this.lpL * fb;
+      this.w = (this.w + 1) % N;
+      outL[s] += yl; outR[s] += yr;
+    }
+  };
+  DM.Delay = Delay;
+
+  // ---------- master lookahead limiter + soft clip ----------
+  // The signal is delayed by `la` samples while the gain already ramps toward the level needed
+  // for the incoming peak, so transients are caught before they reach the output (3 ms latency).
+  function Limiter(sr, threshold) {
+    this.thr = threshold || 0.89; this.gain = 1; this.target = 1;
+    this.la = Math.max(8, Math.round(0.003 * sr));
+    this.dL = new Float32Array(this.la); this.dR = new Float32Array(this.la); this.di = 0;
+    this.att = 1 - Math.exp(-4.6 / this.la);  // reaches the target within the lookahead
+    this.rel = Math.exp(-1 / (0.25 * sr));
+    this.hold = 0;
+    this.gr = 1; // last block's lowest gain (for meters)
+  }
+  function softclip(x) {
+    var a = Math.abs(x);
+    if (a <= 0.9) return x;
+    var y = 0.9 + 0.08 * Math.tanh((a - 0.9) / 0.08); // ceiling 0.98
+    return x < 0 ? -y : y;
+  }
+  Limiter.prototype.process = function (L, R, n) {
+    var minG = 1, la = this.la, dL = this.dL, dR = this.dR;
+    for (var s = 0; s < n; s++) {
+      var xl = L[s], xr = R[s];
+      var p = Math.max(Math.abs(xl), Math.abs(xr));
+      var need = p > this.thr ? this.thr / p : 1;
+      if (need <= this.target) { this.target = need; this.hold = la; }
+      else if (this.hold > 0) this.hold--;
+      else this.target = 1 + (this.target - 1) * this.rel;
+      this.gain += (this.target - this.gain) * (this.target < this.gain ? this.att : 1 - this.rel);
+      var i = this.di, ol = dL[i], or = dR[i];
+      dL[i] = xl; dR[i] = xr; this.di = (i + 1) % la;
+      if (this.gain < minG) minG = this.gain;
+      L[s] = softclip(ol * this.gain);
+      R[s] = softclip(or * this.gain);
+    }
+    this.gr = minG;
+  };
+  DM.Limiter = Limiter;
+  DM.softclip = softclip;
+}),
+(function (DM) {
+  'use strict';
+
+  var PC = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+  var NAMES = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'];
+
+  // 7-note modes as semitone offsets from the tonic
+  var MODES = {
+    ionian: [0, 2, 4, 5, 7, 9, 11],
+    major: [0, 2, 4, 5, 7, 9, 11],
+    dorian: [0, 2, 3, 5, 7, 9, 10],
+    phrygian: [0, 1, 3, 5, 7, 8, 10],
+    lydian: [0, 2, 4, 6, 7, 9, 11],
+    mixolydian: [0, 2, 4, 5, 7, 9, 10],
+    aeolian: [0, 2, 3, 5, 7, 8, 10],
+    minor: [0, 2, 3, 5, 7, 8, 10],
+    locrian: [0, 1, 3, 5, 6, 8, 10],
+    harmonic_minor: [0, 2, 3, 5, 7, 8, 11],
+    melodic_minor: [0, 2, 3, 5, 7, 9, 11],
+    phrygian_dominant: [0, 1, 4, 5, 7, 8, 10],
+    lydian_dominant: [0, 2, 4, 6, 7, 9, 10],
+    hungarian_minor: [0, 2, 3, 6, 7, 8, 11]
+  };
+  DM.MODES = MODES;
+  DM.NOTE_NAMES = NAMES;
+
+  // "C#", "Bb", "D" -> pitch class
+  DM.parsePitchClass = function (s) {
+    var m = /^([A-Ga-g])([#b]*)$/.exec(s);
+    if (!m) throw new Error('Bad key/pitch class "' + s + '"');
+    var pc = PC[m[1].toUpperCase()];
+    for (var i = 0; i < m[2].length; i++) pc += m[2][i] === '#' ? 1 : -1;
+    return ((pc % 12) + 12) % 12;
+  };
+
+  // "C4", "F#3", "Bb-1" -> MIDI number. Returns null if not a note name.
+  var NOTE_RE = /^([A-G])([#b]*)(-?\d)$/;
+  DM.noteToMidi = function (s) {
+    var m = NOTE_RE.exec(s);
+    if (!m) return null;
+    var pc = PC[m[1]];
+    for (var i = 0; i < m[2].length; i++) pc += m[2][i] === '#' ? 1 : -1;
+    return pc + (parseInt(m[3], 10) + 1) * 12;
+  };
+  DM.midiToName = function (m) {
+    m = Math.round(m);
+    return NAMES[((m % 12) + 12) % 12] + (Math.floor(m / 12) - 1);
+  };
+  DM.parseNoteOrMidi = function (v) {
+    if (typeof v === 'number') return v;
+    var m = DM.noteToMidi(String(v));
+    if (m == null) throw new Error('Bad note "' + v + '"');
+    return m;
+  };
+
+  DM.getMode = function (name) {
+    var m = MODES[String(name || 'ionian').toLowerCase()];
+    if (!m) throw new Error('Unknown mode "' + name + '". Known: ' + Object.keys(MODES).join(', '));
+    return m;
+  };
+
+  // Scale degree (1-based, may exceed 7, accidental -1/0/+1) -> semitones above tonic
+  DM.degreeToSemis = function (mode, degree, accidental) {
+    var d = degree - 1;
+    var oct = Math.floor(d / 7);
+    var idx = ((d % 7) + 7) % 7;
+    return mode[idx] + 12 * oct + (accidental || 0);
+  };
+
+  // ---------- chord qualities (intervals from root) ----------
+  var QUAL = {
+    '': [0, 4, 7], 'maj': [0, 4, 7], 'M': [0, 4, 7],
+    'm': [0, 3, 7], 'min': [0, 3, 7],
+    'dim': [0, 3, 6], 'aug': [0, 4, 8], '+': [0, 4, 8],
+    'sus2': [0, 2, 7], 'sus4': [0, 5, 7], 'sus': [0, 5, 7],
+    '5': [0, 7],
+    '6': [0, 4, 7, 9], 'm6': [0, 3, 7, 9],
+    '7': [0, 4, 7, 10], 'maj7': [0, 4, 7, 11], 'M7': [0, 4, 7, 11],
+    'm7': [0, 3, 7, 10], 'min7': [0, 3, 7, 10], 'mmaj7': [0, 3, 7, 11],
+    'm7b5': [0, 3, 6, 10], 'dim7': [0, 3, 6, 9],
+    '7sus4': [0, 5, 7, 10],
+    'add9': [0, 4, 7, 14], 'madd9': [0, 3, 7, 14],
+    '9': [0, 4, 7, 10, 14], 'maj9': [0, 4, 7, 11, 14], 'm9': [0, 3, 7, 10, 14],
+    '6/9': [0, 4, 7, 9, 14], 'm11': [0, 3, 7, 10, 14, 17]
+  };
+  DM.CHORD_QUALITIES = QUAL;
+
+  var ROMAN = [['VII', 7], ['VI', 6], ['IV', 4], ['V', 5], ['III', 3], ['II', 2], ['I', 1]];
+
+  // Parse a chord symbol in the context of key (pitch class) + mode.
+  // Absolute: "Dm7", "Bbmaj7/D", "F#sus4". Roman (mode-adaptive): "I", "vi", "IV7", "bVII", "ivm", "V/3".
+  //   Roman case is ignored; triad quality comes from the active mode so the same progression
+  //   re-harmonizes when the mode changes. Suffix "7"/"9"/"add9" stacks diatonic notes; an explicit
+  //   quality suffix (m, maj, dim, sus4, maj7...) overrides. "b"/"#" prefix = borrowed major chord.
+  // Returns { root: pitchClass, tones: [semis from root...], bass: pitchClass, name }
+  DM.parseChord = function (sym, keyPc, mode) {
+    sym = String(sym).trim();
+    if (sym === 'N.C.' || sym === 'r' || sym === '-') return null;
+    var bassPart = null;
+    var slash = sym.indexOf('/');
+    if (slash > 0 && sym.slice(slash) !== '/9') {
+      bassPart = sym.slice(slash + 1); sym = sym.slice(0, slash);
+    }
+    var root, tones, m;
+    if ((m = /^([A-G][#b]?)(.*)$/.exec(sym))) {
+      root = DM.parsePitchClass(m[1]);
+      var q = m[2];
+      if (!(q in QUAL)) throw new Error('Unknown chord quality "' + q + '" in "' + sym + '"');
+      tones = QUAL[q].slice();
+    } else if ((m = /^([b#]?)([IViv]+)(.*)$/.exec(sym))) {
+      var acc = m[1] === 'b' ? -1 : m[1] === '#' ? 1 : 0;
+      var rn = m[2].toUpperCase(), deg = 0;
+      for (var i = 0; i < ROMAN.length; i++) if (ROMAN[i][0] === rn) { deg = ROMAN[i][1]; break; }
+      if (!deg) throw new Error('Bad roman numeral "' + m[2] + '"');
+      var suffix = m[3];
+      // accidentals are relative to the major scale (bVII = whole step below tonic in any mode)
+      var rootSemis = acc !== 0 ? DM.degreeToSemis(MODES.ionian, deg, acc) : DM.degreeToSemis(mode, deg, 0);
+      root = (keyPc + rootSemis) % 12;
+      var explicit = /^(m|min|maj|M|dim|aug|\+|sus2|sus4|sus|5|m7|maj7|M7|m7b5|dim7|mmaj7|madd9|m9|maj9|m6|7sus4|m11)/.test(suffix);
+      if (acc !== 0 && !explicit) {
+        tones = QUAL[suffix in QUAL ? suffix : ''].slice();
+      } else if (explicit) {
+        if (!(suffix in QUAL)) throw new Error('Unknown chord quality "' + suffix + '" in "' + sym + '"');
+        tones = QUAL[suffix].slice();
+      } else {
+        // diatonic stack of thirds from the mode
+        var stack = [1, 3, 5];
+        if (suffix === '7') stack = [1, 3, 5, 7];
+        else if (suffix === '9') stack = [1, 3, 5, 7, 9];
+        else if (suffix === 'add9') stack = [1, 3, 5, 9];
+        else if (suffix === '6') stack = [1, 3, 5, 6];
+        else if (suffix !== '') throw new Error('Unknown roman suffix "' + suffix + '" in "' + sym + '"');
+        tones = [];
+        var base = DM.degreeToSemis(mode, deg, 0);
+        for (var k = 0; k < stack.length; k++) tones.push(DM.degreeToSemis(mode, deg + stack[k] - 1, 0) - base);
+      }
+    } else {
+      throw new Error('Cannot parse chord "' + sym + '"');
+    }
+    var bass = root;
+    if (bassPart) {
+      if (/^\d$/.test(bassPart)) {
+        var bi = parseInt(bassPart, 10);
+        var tIdx = bi === 1 ? 0 : bi === 3 ? 1 : bi === 5 ? 2 : bi === 7 ? 3 : 0;
+        bass = (root + (tones[tIdx] || 0)) % 12;
+      } else bass = DM.parsePitchClass(bassPart);
+    }
+    return { root: root, tones: tones, bass: bass, name: sym + (bassPart ? '/' + bassPart : '') };
+  };
+
+  DM.chordLabel = function (ch) {
+    if (!ch) return 'N.C.';
+    var q = '';
+    var key = ch.tones.join(',');
+    for (var k in QUAL) if (QUAL[k].join(',') === key) { q = k; break; }
+    var s = NAMES[ch.root] + q;
+    if (ch.bass !== ch.root) s += '/' + NAMES[ch.bass];
+    return s;
+  };
+
+  // Pentatonic subset of a mode (degrees chosen to avoid semitone clashes)
+  DM.pentatonicDegrees = function (mode) {
+    return mode[2] === 4 ? [1, 2, 3, 5, 6] : [1, 3, 4, 5, 7];
+  };
+}),
+(function (DM) {
+  'use strict';
+  var fsin = DM.fsin;
+
+  // ---- shared voice plumbing ----
+  function initVoice(v, sr, p, durSec, pan) {
+    v.sr = sr; v.p = p; v.t = 0; v.done = false;
+    v.offAt = Math.max(1, Math.round(durSec * sr)); v.released = false;
+    v.kill = 1; v.killing = false;
+    var g = DM.panGains(pan || 0);
+    v.gl = g[0]; v.gr = g[1];
+  }
+  function mixOut(v, tmp, L, R, off, n) {
+    var gl = v.gl, gr = v.gr, s;
+    if (v.killing) {
+      for (s = 0; s < n; s++) {
+        tmp[s] *= v.kill;
+        v.kill -= 1 / 256; if (v.kill < 0) v.kill = 0;
+      }
+      if (v.kill <= 0) v.done = true;
+    }
+    for (s = 0; s < n; s++) { L[off + s] += tmp[s] * gl; R[off + s] += tmp[s] * gr; }
+  }
+  function velAmp(vel, curve) { return Math.pow(DM.clamp(vel, 0, 1), curve || 1.6); }
+  // pitch scoop: start p.bend semitones off and glide to pitch over p.bendTime seconds
+  function initBend(v, p, sr) {
+    v.bendS = p.bend || 0;
+    v.bendK = Math.exp(-3 / Math.max(1, (p.bendTime || 0.08) * sr));
+  }
+  function bendMul(v) {
+    if (v.bendS === 0) return 1;
+    var m = Math.pow(2, v.bendS / 12);
+    v.bendS *= v.bendK;
+    if (Math.abs(v.bendS) < 0.002) v.bendS = 0;
+    return m;
+  }
+  DM.mixOut = mixOut;
+  DM.velAmp = velAmp;
+
+  var VOICES = {};
+  DM.VOICES = VOICES;
+
+  // ======================= PIANO (additive, inharmonic, felt) =======================
+  // params: bright (0..1), decay (sec at C4), release, hammer, felt (lowpass amount), stretch
+  function PianoVoice(sr, p, midi, vel, durSec, pan, rng) {
+    initVoice(this, sr, p, durSec, pan);
+    var f0 = DM.mtof(midi);
+    var bright = (p.bright == null ? 0.5 : p.bright) * (0.55 + 0.45 * vel);
+    var B = (p.stretch == null ? 0.0004 : p.stretch) * Math.min(4, Math.max(0.3, f0 / 261));
+    var Tbase = DM.clamp((p.decay || 7) * Math.pow(261.6 / f0, 0.55), 1.0, 22);
+    var amp = velAmp(vel, 1.5) * 0.22;
+    this.parts = [];
+    var maxN = 12;
+    for (var n = 1; n <= maxN; n++) {
+      var f = n * f0 * Math.sqrt(1 + B * n * n);
+      if (f > sr * 0.42) break;
+      var a = amp / Math.pow(n, 1.1) * Math.exp(-(n - 1) * (0.9 - 0.75 * bright));
+      if (n === 1) a *= 0.9;
+      var T = Tbase / (1 + 0.45 * (n - 1));
+      this.parts.push({ inc: f / sr, ph: rng.next(), a: a, k: Math.exp(-6.9 / (T * sr)) });
+      if (n <= 3) { // detuned unison string -> slow beating
+        var det = 1 + (0.0004 + rng.next() * 0.0006) * (rng.next() < 0.5 ? -1 : 1);
+        this.parts.push({ inc: f * det / sr, ph: rng.next(), a: a * 0.45, k: Math.exp(-6.9 / (T * 1.4 * sr)) });
+      }
+    }
+    // two-stage decay: fast "prompt" component
+    this.prompt = 1; this.promptK = Math.exp(-6.9 / (0.35 * sr));
+    this.hammer = (p.hammer == null ? 0.5 : p.hammer) * amp * 0.9;
+    this.hamK = Math.exp(-6.9 / (0.02 * sr));
+    this.ham = new DM.SVF(sr); this.ham.set(Math.min(sr * 0.4, 1200 + f0 * 3), 1.2);
+    this.noise = new DM.Noise(rng);
+    this.lp = new DM.OnePole(sr, 900 + 9000 * bright * (1 - 0.6 * (p.felt || 0)) + f0 * 2);
+    this.rel = Math.exp(-6.9 / ((p.release || 0.35) * sr));
+    this.env = 0; this.atk = 1 / (0.002 * sr);
+  }
+  PianoVoice.prototype.render = function (L, R, off, n, tmp) {
+    var s, i, parts = this.parts;
+    for (s = 0; s < n; s++) tmp[s] = 0;
+    for (i = 0; i < parts.length; i++) {
+      var pt = parts[i], ph = pt.ph, inc = pt.inc, a = pt.a, k = pt.k;
+      if (a < 1e-6) continue;
+      for (s = 0; s < n; s++) {
+        tmp[s] += a * fsin(ph);
+        ph += inc; if (ph >= 1) ph -= 1;
+        a *= k;
+      }
+      pt.ph = ph; pt.a = a;
+    }
+    var level = 0;
+    for (s = 0; s < n; s++) {
+      var x = tmp[s] * (0.6 + 0.4 * this.prompt);
+      this.prompt *= this.promptK;
+      if (this.hammer > 1e-6) { x += this.ham.process(this.noise.white(), 1) * this.hammer; this.hammer *= this.hamK; }
+      if (this.env < 1) { this.env += this.atk; if (this.env > 1) this.env = 1; }
+      if (this.t >= this.offAt) { this.env *= this.rel; this.released = true; }
+      this.t++;
+      x = this.lp.process(x) * this.env;
+      tmp[s] = x;
+      level = Math.max(level, this.env);
+    }
+    if (this.released && level < 1e-4) this.done = true;
+    var alive = false;
+    for (i = 0; i < parts.length; i++) if (parts[i].a > 2e-5) { alive = true; break; }
+    if (!alive) this.done = true;
+    mixOut(this, tmp, L, R, off, n);
+  };
+  VOICES.piano = PianoVoice;
+
+  // ======================= FM electric piano / bells =======================
+  // params: ratio, index, indexDecay, decay, release, tine, tineRatio, tremRate, tremDepth
+  function FMVoice(sr, p, midi, vel, durSec, pan, rng) {
+    initVoice(this, sr, p, durSec, pan);
+    var f0 = DM.mtof(midi);
+    this.inc = f0 / sr; this.minc = f0 * (p.ratio || 1) / sr; this.tinc = f0 * (p.tineRatio || 14) / sr;
+    this.ph = 0; this.mph = 0; this.tph = 0;
+    this.idx = (p.index == null ? 2.2 : p.index) * (0.4 + 0.8 * vel);
+    this.idxK = Math.exp(-6.9 / ((p.indexDecay || 0.8) * sr));
+    this.idxFloor = (p.indexSustain || 0.15) * this.idx; this.idxDyn = this.idx - this.idxFloor;
+    var T = DM.clamp((p.decay || 5) * Math.pow(261.6 / f0, 0.4), 0.5, 15);
+    this.a = velAmp(vel, 1.4) * 0.28; this.k = Math.exp(-6.9 / (T * sr));
+    this.tine = (p.tine == null ? 0.25 : p.tine) * this.a * vel; this.tineK = Math.exp(-6.9 / (0.12 * sr));
+    this.rel = Math.exp(-6.9 / ((p.release || 0.25) * sr));
+    this.trem = p.tremDepth || 0; this.tremInc = (p.tremRate || 5) / sr; this.tremPh = rng.next();
+    this.env = 0; this.atk = 1 / ((p.attack || 0.003) * sr);
+  }
+  FMVoice.prototype.render = function (L, R, off, n, tmp) {
+    for (var s = 0; s < n; s++) {
+      var idx = this.idxFloor + this.idxDyn;
+      var m = fsin(this.mph) * idx;
+      var x = fsin(this.ph + m / 6.283185307) * this.a + fsin(this.tph) * this.tine;
+      this.idxDyn *= this.idxK;
+      this.ph += this.inc; if (this.ph >= 1) this.ph -= 1;
+      this.mph += this.minc; if (this.mph >= 1) this.mph -= 1;
+      this.tph += this.tinc; if (this.tph >= 1) this.tph -= 1;
+      this.a *= this.k; this.tine *= this.tineK;
+      if (this.env < 1 && !this.released) { this.env += this.atk; if (this.env > 1) this.env = 1; }
+      if (this.t >= this.offAt) { this.env *= this.rel; this.released = true; }
+      this.t++;
+      if (this.trem) { x *= 1 - this.trem * 0.5 * (1 + fsin(this.tremPh)); this.tremPh += this.tremInc; }
+      tmp[s] = x * this.env;
+    }
+    if ((this.released && this.env < 1e-4) || this.a < 1e-5) this.done = true;
+    mixOut(this, tmp, L, R, off, n);
+  };
+  VOICES.fm = FMVoice;
+
+  // ======================= PLUCK (Karplus-Strong) =======================
+  // params: decay (T60 sec at C4), bright (0..1 excitation), damping (0..1 loop lowpass), mute (release sec), body
+  function PluckVoice(sr, p, midi, vel, durSec, pan, rng) {
+    initVoice(this, sr, p, durSec, pan);
+    var f0 = DM.mtof(midi);
+    var s = DM.clamp(p.damping == null ? 0.5 : p.damping, 0.05, 0.95);
+    var period = sr / f0;
+    var total = period - s; // loop filter adds s samples of delay
+    var N = Math.max(2, Math.floor(total - 0.1));
+    var frac = total - N; // 0.1..1.1
+    this.apc = (1 - frac) / (1 + frac); this.apx = 0; this.apy = 0;
+    this.buf = new Float32Array(N); this.N = N; this.i = 0; this.s = s; this.prev = 0;
+    var T = DM.clamp((p.decay || 4) * Math.pow(261.6 / f0, 0.5), 0.2, 20);
+    this.rho = Math.exp(-6.9 * (period / sr) / T);
+    // excitation: noise lowpassed by brightness and velocity
+    var bright = DM.clamp((p.bright == null ? 0.6 : p.bright) * (0.5 + 0.5 * vel), 0.02, 1);
+    var lp = 0, a = 1 - bright * 0.95, amp = velAmp(vel, 1.3) * 0.5;
+    var pickPos = p.pick == null ? 0.13 : p.pick, pd = Math.max(1, Math.round(N * pickPos));
+    var tmpEx = new Float32Array(N);
+    for (var k = 0; k < N; k++) { var w = rng.bipolar(); lp = w + (lp - w) * a; tmpEx[k] = lp; }
+    var mean = 0;
+    for (k = 0; k < N; k++) mean += tmpEx[k];
+    mean /= N;
+    for (k = 0; k < N; k++) this.buf[k] = (tmpEx[k] - mean - (k >= pd ? tmpEx[k - pd] - mean : 0) * 0.6) * amp;
+    this.mute = Math.exp(-6.9 / ((p.mute || 0.15) * sr));
+    this.ring = !!p.ring;
+    this.env = 1; this.quiet = 0;
+    this.body = p.body ? new DM.SVF(sr) : null;
+    if (this.body) this.body.set(p.bodyFreq || 220, 1.5);
+  }
+  PluckVoice.prototype.render = function (L, R, off, n, tmp) {
+    var buf = this.buf, N = this.N, s = this.s, rho = this.rho, peak = 0;
+    for (var j = 0; j < n; j++) {
+      var x = buf[this.i];
+      var y = ((1 - s) * x + s * this.prev) * rho;
+      this.prev = x;
+      // fractional-delay allpass for tuning
+      var ap = this.apc * y + this.apx - this.apc * this.apy;
+      this.apx = y; this.apy = ap;
+      buf[this.i] = ap;
+      this.i++; if (this.i >= N) this.i = 0;
+      if (this.t >= this.offAt && !this.ring) { this.env *= this.mute; this.released = true; }
+      this.t++;
+      var out = x * this.env;
+      if (this.body) out += this.body.process(out, 1) * this.p.body;
+      tmp[j] = out;
+      var ax = out < 0 ? -out : out; if (ax > peak) peak = ax;
+    }
+    if (peak < 2e-5) { this.quiet += n; if (this.quiet > this.sr * 0.05) this.done = true; } else this.quiet = 0;
+    mixOut(this, tmp, L, R, off, n);
+  };
+  VOICES.pluck = PluckVoice;
+
+  // ======================= ANALOG (subtractive: pads, strings, brass, bass, leads) =======================
+  // params: wave, unison, detune(cents), sub, noise, cutoff, reso, envAmt(oct), keytrack,
+  //         a d s r, fa fd fs fr, vibRate vibDepth(semis) vibDelay, gain, filterType ('lp'|'bp'|'hp'),
+  //         tremRate tremDepth, bend bendTime
+  function AnalogVoice(sr, p, midi, vel, durSec, pan, rng) {
+    initVoice(this, sr, p, durSec, pan);
+    var f0 = DM.mtof(midi);
+    this.f0 = f0;
+    this.wave = p.wave || 'saw';
+    var uni = Math.max(1, Math.min(7, p.unison || 1));
+    this.oscs = [];
+    var det = p.detune == null ? 8 : p.detune;
+    for (var u = 0; u < uni; u++) {
+      var c = uni === 1 ? 0 : (u / (uni - 1) - 0.5) * 2 * det;
+      this.oscs.push({ ratio: Math.pow(2, c / 1200), ph: rng.next() });
+    }
+    this.oscGain = (p.waveGain == null ? 1 : p.waveGain) / Math.sqrt(uni);
+    this.sub = p.sub || 0; this.subPh = 0;
+    this.noiseAmt = p.noise || 0; this.noise = new DM.Noise(rng);
+    this.duty = p.duty || 0.5;
+    this.filt = new DM.SVF(sr); this.filtMode = p.filterType === 'bp' ? 1 : p.filterType === 'hp' ? 2 : 0;
+    this.filt2 = p.poles === 4 ? new DM.SVF(sr) : null;
+    var key = Math.pow(f0 / 261.6, p.keytrack == null ? 0.5 : p.keytrack);
+    this.cut = (p.cutoff || 2000) * key * (0.6 + 0.4 * vel + (p.velToCutoff || 0) * vel);
+    this.reso = p.reso || 0.8;
+    this.envAmt = p.envAmt || 0;
+    this.amp = new DM.Env(sr, p.a || 0.01, p.d || 0.3, p.s == null ? 0.8 : p.s, p.r || 0.4);
+    this.fenv = new DM.Env(sr, p.fa || 0.005, p.fd || 0.4, p.fs == null ? 0.3 : p.fs, p.fr || 0.5);
+    this.level = velAmp(vel, p.velCurve || 1.2) * (p.level || 0.18);
+    this.vibInc = (p.vibRate || 5) / sr; this.vibDepth = p.vibDepth || 0; this.vibPh = rng.next();
+    this.vibDelay = Math.round((p.vibDelay || 0.3) * sr);
+    this.inc = f0 / sr;
+    this.ctr = 0;
+    this.tremInc = (p.tremRate || 5) / sr; this.tremDepth = p.tremDepth || 0; this.tremPh = rng.next();
+    initBend(this, p, sr);
+  }
+  AnalogVoice.prototype.render = function (L, R, off, n, tmp) {
+    var oscs = this.oscs, wave = this.wave, nO = oscs.length, sr = this.sr;
+    for (var s = 0; s < n; s++) {
+      var inc = this.inc * bendMul(this);
+      if (this.vibDepth && this.t > this.vibDelay) {
+        var ramp = Math.min(1, (this.t - this.vibDelay) / (sr * 0.5));
+        inc *= Math.pow(2, this.vibDepth * ramp * fsin(this.vibPh) / 12);
+        this.vibPh += this.vibInc;
+      }
+      var x = 0;
+      if (this.oscGain > 0) {
+        for (var o = 0; o < nO; o++) {
+          var os = oscs[o], dt = inc * os.ratio;
+          x += DM.osc(wave, os.ph, dt, this.duty);
+          os.ph += dt; if (os.ph >= 1) os.ph -= 1;
+        }
+        x *= this.oscGain;
+      }
+      if (this.sub) { x += fsin(this.subPh) * this.sub; this.subPh += inc * 0.5; if (this.subPh >= 1) this.subPh -= 1; }
+      if (this.noiseAmt) x += this.noise.white() * this.noiseAmt;
+      if (this.t === this.offAt) { this.amp.release(); this.fenv.release(); this.released = true; }
+      this.t++;
+      var fe = this.fenv.next();
+      if ((this.ctr++ & 15) === 0) {
+        var fc = this.cut * Math.pow(2, this.envAmt * fe);
+        this.filt.set(fc, this.reso);
+        if (this.filt2) this.filt2.set(fc, 0.6);
+      }
+      x = this.filt.process(x, this.filtMode);
+      if (this.filt2) x = this.filt2.process(x, this.filtMode);
+      var tr = 1;
+      if (this.tremDepth) { tr = 1 - this.tremDepth * 0.5 * (1 + fsin(this.tremPh)); this.tremPh += this.tremInc; }
+      tmp[s] = x * this.amp.next() * this.level * tr;
+    }
+    if (this.amp.stage === 0) this.done = true;
+    mixOut(this, tmp, L, R, off, n);
+  };
+  VOICES.analog = AnalogVoice;
+
+  // ======================= MODAL (mallets, bells, music box, kalimba, timpani) =======================
+  // params: partials [[ratio, amp, decayScale]...], decay (T60 sec), strike (noise amount), release, damp
+  function ModalVoice(sr, p, midi, vel, durSec, pan, rng) {
+    initVoice(this, sr, p, durSec, pan);
+    var f0 = DM.mtof(midi);
+    var parts = p.partials || [[1, 1, 1], [2.76, 0.4, 0.5], [5.4, 0.2, 0.3]];
+    var T = DM.clamp((p.decay || 2) * Math.pow(261.6 / f0, p.decayTrack == null ? 0.4 : p.decayTrack), 0.08, 25);
+    var amp = velAmp(vel, 1.4) * (p.level || 0.22);
+    var bright = 0.4 + 0.6 * vel;
+    this.parts = [];
+    for (var i = 0; i < parts.length; i++) {
+      var f = f0 * parts[i][0];
+      if (f > sr * 0.45) continue;
+      var a = amp * parts[i][1] * (i === 0 ? 1 : bright);
+      this.parts.push({ inc: f / sr, ph: 0, a: a, k: Math.exp(-6.9 / (T * (parts[i][2] || 1) * sr)) });
+    }
+    this.strike = (p.strike || 0) * amp; this.strikeK = Math.exp(-6.9 / (0.012 * sr));
+    this.sf = new DM.SVF(sr); this.sf.set(Math.min(sr * 0.4, f0 * 4), 0.9);
+    this.noise = new DM.Noise(rng);
+    this.damp = !!p.damp; this.rel = Math.exp(-6.9 / ((p.release || 0.15) * sr)); this.env = 1;
+    this.atk = 0; this.atkInc = 1 / Math.max(1, (p.attack || 0.001) * sr);
+  }
+  ModalVoice.prototype.render = function (L, R, off, n, tmp) {
+    var s, parts = this.parts;
+    for (s = 0; s < n; s++) tmp[s] = 0;
+    var alive = false;
+    for (var i = 0; i < parts.length; i++) {
+      var pt = parts[i], ph = pt.ph, inc = pt.inc, a = pt.a, k = pt.k;
+      if (a < 1e-6) continue;
+      alive = true;
+      for (s = 0; s < n; s++) { tmp[s] += a * fsin(ph); ph += inc; if (ph >= 1) ph -= 1; a *= k; }
+      pt.ph = ph; pt.a = a;
+    }
+    for (s = 0; s < n; s++) {
+      var x = tmp[s];
+      if (this.atk < 1) { this.atk += this.atkInc; if (this.atk > 1) this.atk = 1; x *= this.atk; }
+      if (this.strike > 1e-6) { x += this.sf.process(this.noise.white(), 1) * this.strike; this.strike *= this.strikeK; }
+      if (this.damp && this.t >= this.offAt) { this.env *= this.rel; this.released = true; }
+      this.t++;
+      tmp[s] = x * this.env;
+    }
+    if (!alive || this.env < 1e-4) this.done = true;
+    mixOut(this, tmp, L, R, off, n);
+  };
+  VOICES.modal = ModalVoice;
+
+  // ======================= WIND (flute, ocarina, pan flute, whistle) =======================
+  // params: breath, chiff, harmonics [h2, h3], a, r, vibRate, vibDepth, vibDelay, level, bend, bendTime
+  function WindVoice(sr, p, midi, vel, durSec, pan, rng) {
+    initVoice(this, sr, p, durSec, pan);
+    var f0 = DM.mtof(midi);
+    this.inc = f0 / sr; this.ph = 0;
+    var h = p.harmonics || [0.12, 0.05];
+    this.h2 = h[0] || 0; this.h3 = h[1] || 0;
+    this.noise = new DM.Noise(rng);
+    this.bp = new DM.SVF(sr); this.bp.set(Math.min(sr * 0.4, f0 * 2), 2.5);
+    this.breath = p.breath == null ? 0.08 : p.breath;
+    this.chiff = (p.chiff == null ? 0.3 : p.chiff); this.chiffK = Math.exp(-6.9 / (0.06 * sr));
+    this.amp = new DM.Env(sr, p.a || 0.06, 0.2, 0.85, p.r || 0.18);
+    this.level = velAmp(vel, 1.2) * (p.level || 0.2);
+    this.vibInc = (p.vibRate || 5.2) / sr; this.vibDepth = p.vibDepth == null ? 0.18 : p.vibDepth;
+    this.vibDelay = Math.round((p.vibDelay == null ? 0.25 : p.vibDelay) * sr); this.vibPh = 0;
+    initBend(this, p, sr);
+  }
+  WindVoice.prototype.render = function (L, R, off, n, tmp) {
+    for (var s = 0; s < n; s++) {
+      var inc = this.inc * bendMul(this), vib = 0;
+      if (this.t > this.vibDelay) {
+        var ramp = Math.min(1, (this.t - this.vibDelay) / (this.sr * 0.6));
+        vib = fsin(this.vibPh) * ramp; this.vibPh += this.vibInc;
+        inc *= Math.pow(2, this.vibDepth * vib / 12);
+      }
+      var ph = this.ph;
+      var x = fsin(ph) + this.h2 * fsin(ph * 2) + this.h3 * fsin(ph * 3);
+      this.ph += inc; if (this.ph >= 1) this.ph -= 1;
+      var nz = this.bp.process(this.noise.white(), 1);
+      x += nz * (this.breath * (1 + 0.5 * vib) + this.chiff);
+      this.chiff *= this.chiffK;
+      if (this.t === this.offAt) { this.amp.release(); this.released = true; }
+      this.t++;
+      tmp[s] = x * this.amp.next() * this.level;
+    }
+    if (this.amp.stage === 0) this.done = true;
+    mixOut(this, tmp, L, R, off, n);
+  };
+  VOICES.wind = WindVoice;
+
+  // ======================= FORMANT (choir / vox pads) =======================
+  var VOWELS = {
+    a: [[700, 1], [1220, 0.5], [2600, 0.25]],
+    o: [[450, 1], [800, 0.6], [2830, 0.15]],
+    u: [[325, 1], [700, 0.3], [2530, 0.1]],
+    e: [[400, 1], [2000, 0.35], [2550, 0.25]],
+    i: [[300, 1], [2300, 0.3], [3000, 0.2]]
+  };
+  function FormantVoice(sr, p, midi, vel, durSec, pan, rng) {
+    initVoice(this, sr, p, durSec, pan);
+    var f0 = DM.mtof(midi);
+    var uni = p.unison || 3, det = p.detune == null ? 10 : p.detune;
+    this.oscs = [];
+    for (var u = 0; u < uni; u++) {
+      var c = uni === 1 ? 0 : (u / (uni - 1) - 0.5) * 2 * det;
+      this.oscs.push({ inc: f0 * Math.pow(2, c / 1200) / sr, ph: rng.next(), vib: rng.next() });
+    }
+    var vw = VOWELS[p.vowel || 'a'] || VOWELS.a;
+    this.forms = [];
+    for (var i = 0; i < vw.length; i++) {
+      var f = new DM.SVF(sr); f.set(Math.min(vw[i][0] * (p.formantShift || 1), sr * 0.4), 6 + i * 2);
+      this.forms.push({ f: f, g: vw[i][1] });
+    }
+    this.amp = new DM.Env(sr, p.a || 0.4, 0.5, 0.9, p.r || 0.8);
+    this.level = velAmp(vel, 1.1) * (p.level || 0.5) / Math.sqrt(uni);
+    this.vibInc = (p.vibRate || 5) / sr; this.vibDepth = p.vibDepth == null ? 0.12 : p.vibDepth;
+    this.noise = new DM.Noise(rng); this.breath = p.breath || 0.02;
+  }
+  FormantVoice.prototype.render = function (L, R, off, n, tmp) {
+    var oscs = this.oscs, forms = this.forms;
+    for (var s = 0; s < n; s++) {
+      var src = 0;
+      for (var o = 0; o < oscs.length; o++) {
+        var os = oscs[o];
+        var inc = os.inc * (1 + this.vibDepth * 0.0578 * fsin(os.vib));
+        os.vib += this.vibInc * (1 + o * 0.07);
+        src += DM.osc('saw', os.ph, inc);
+        os.ph += inc; if (os.ph >= 1) os.ph -= 1;
+      }
+      src += this.noise.white() * this.breath;
+      var y = 0;
+      for (var k = 0; k < forms.length; k++) y += forms[k].f.process(src, 1) * forms[k].g * forms[k].f.k;
+      if (this.t === this.offAt) { this.amp.release(); this.released = true; }
+      this.t++;
+      tmp[s] = y * this.amp.next() * this.level;
+    }
+    if (this.amp.stage === 0) this.done = true;
+    mixOut(this, tmp, L, R, off, n);
+  };
+  VOICES.formant = FormantVoice;
+
+  // ======================= ORGAN (drawbar additive + percussion + rotary wobble) =======================
+  // params: drawbars [9 levels for 16' 8' 5 1/3' 4' 2 2/3' 2' 1 3/5' 1 1/3' 1'], perc, leslie (0..1), a, r, level
+  var DRAW_R = [0.5, 1, 1.5, 2, 3, 4, 5, 6, 8];
+  function OrganVoice(sr, p, midi, vel, durSec, pan, rng) {
+    initVoice(this, sr, p, durSec, pan);
+    var f0 = DM.mtof(midi), db = p.drawbars || [0.6, 1, 0.5, 0.4, 0.2, 0.2, 0.05, 0.05, 0.1];
+    this.parts = [];
+    var sum = 0, i;
+    for (i = 0; i < 9; i++) sum += db[i] || 0;
+    for (i = 0; i < 9; i++) {
+      var f = f0 * DRAW_R[i];
+      if (!db[i] || f > sr * 0.45) continue;
+      this.parts.push({ inc: f / sr, ph: rng.next(), a: db[i] / Math.max(1, sum * 0.6) });
+    }
+    this.perc = (p.perc || 0) * 0.6; this.percInc = f0 * 3 / sr; this.percPh = 0; this.percK = Math.exp(-6.9 / (0.25 * sr));
+    this.amp = new DM.Env(sr, p.a || 0.006, 0.1, 1, p.r || 0.08);
+    this.level = velAmp(vel, 0.6) * (p.level || 0.14);
+    this.les = p.leslie == null ? 0.4 : p.leslie; this.lesPh = rng.next(); this.lesInc = (p.leslieRate || 5.8) / sr;
+  }
+  OrganVoice.prototype.render = function (L, R, off, n, tmp) {
+    var parts = this.parts;
+    for (var s = 0; s < n; s++) {
+      var lfo = fsin(this.lesPh); this.lesPh += this.lesInc;
+      var pm = 1 + this.les * 0.0025 * lfo, x = 0;
+      for (var i = 0; i < parts.length; i++) {
+        var pt = parts[i];
+        x += fsin(pt.ph) * pt.a;
+        pt.ph += pt.inc * pm; if (pt.ph >= 1) pt.ph -= 1;
+      }
+      if (this.perc > 1e-5) { x += fsin(this.percPh) * this.perc; this.percPh += this.percInc; if (this.percPh >= 1) this.percPh -= 1; this.perc *= this.percK; }
+      if (this.t === this.offAt) { this.amp.release(); this.released = true; }
+      this.t++;
+      tmp[s] = x * this.amp.next() * this.level * (1 - this.les * 0.25 * (1 + lfo));
+    }
+    if (this.amp.stage === 0) this.done = true;
+    mixOut(this, tmp, L, R, off, n);
+  };
+  VOICES.organ = OrganVoice;
+}),
+(function (DM) {
+  'use strict';
+  var fsin = DM.fsin;
+
+  // ======================= DRUMS (recipe-driven) =======================
+  // recipe: { tone:{f1,f0,pd,decay,level,wave('sine'|'triangle'|'square'),drive},
+  //           noise:{level,decay,type,cutoff,q,attack,color('white'|'pink'|'brown'|'sh'),rate,bursts,spacing},
+  //           metal:{level,decay,cutoff} }
+  var DRUMS = {
+    kick: { tone: { f1: 150, f0: 48, pd: 0.045, decay: 0.42, level: 1.0 }, noise: { level: 0.12, decay: 0.006, type: 'hp', cutoff: 3000 } },
+    softkick: { tone: { f1: 95, f0: 46, pd: 0.05, decay: 0.32, level: 0.8 } },
+    snare: { tone: { f1: 260, f0: 185, pd: 0.03, decay: 0.11, level: 0.45 }, noise: { level: 0.55, decay: 0.15, type: 'bp', cutoff: 3200, q: 0.6 } },
+    brush: { noise: { level: 0.32, decay: 0.2, type: 'bp', cutoff: 3800, q: 0.5, attack: 0.02, color: 'pink' } },
+    rim: { tone: { f1: 1700, f0: 1650, pd: 0.01, decay: 0.025, level: 0.35 }, noise: { level: 0.15, decay: 0.01, type: 'hp', cutoff: 5000 } },
+    clap: { noise: { level: 0.55, decay: 0.16, type: 'bp', cutoff: 1300, q: 1.4, bursts: 3, spacing: 0.011 } },
+    hat: { metal: { level: 0.32, decay: 0.045, cutoff: 7500 }, noise: { level: 0.1, decay: 0.035, type: 'hp', cutoff: 9000 } },
+    ohat: { metal: { level: 0.28, decay: 0.32, cutoff: 7000 }, noise: { level: 0.1, decay: 0.25, type: 'hp', cutoff: 9000 } },
+    shaker: { noise: { level: 0.3, decay: 0.06, type: 'bp', cutoff: 7000, q: 0.8, attack: 0.018 } },
+    tamb: { metal: { level: 0.22, decay: 0.16, cutoff: 8000 }, noise: { level: 0.15, decay: 0.12, type: 'hp', cutoff: 8500 } },
+    tomlo: { tone: { f1: 150, f0: 92, pd: 0.12, decay: 0.45, level: 0.8 }, noise: { level: 0.08, decay: 0.03, type: 'lp', cutoff: 1500 } },
+    tom: { tone: { f1: 210, f0: 140, pd: 0.1, decay: 0.38, level: 0.75 }, noise: { level: 0.08, decay: 0.03, type: 'lp', cutoff: 1800 } },
+    tomhi: { tone: { f1: 300, f0: 205, pd: 0.08, decay: 0.3, level: 0.7 }, noise: { level: 0.08, decay: 0.025, type: 'lp', cutoff: 2200 } },
+    taiko: { tone: { f1: 115, f0: 60, pd: 0.09, decay: 0.75, level: 1.1 }, noise: { level: 0.45, decay: 0.07, type: 'lp', cutoff: 700, q: 0.8 } },
+    taikorim: { tone: { f1: 900, f0: 820, pd: 0.01, decay: 0.03, level: 0.3 }, noise: { level: 0.25, decay: 0.015, type: 'bp', cutoff: 2500, q: 1 } },
+    shime: { tone: { f1: 470, f0: 360, pd: 0.03, decay: 0.12, level: 0.5 }, noise: { level: 0.25, decay: 0.03, type: 'bp', cutoff: 2200, q: 0.9 } },
+    boom: { tone: { f1: 70, f0: 32, pd: 0.25, decay: 1.6, level: 1.0 }, noise: { level: 0.35, decay: 1.1, type: 'lp', cutoff: 260, color: 'brown' } },
+    crash: { metal: { level: 0.25, decay: 1.6, cutoff: 4500 }, noise: { level: 0.22, decay: 1.3, type: 'hp', cutoff: 5000 } },
+    ride: { metal: { level: 0.2, decay: 0.9, cutoff: 6500 }, tone: { f1: 3100, f0: 3100, pd: 0.01, decay: 0.5, level: 0.04 } },
+    woodblock: { tone: { f1: 920, f0: 880, pd: 0.01, decay: 0.05, level: 0.45, wave: 'triangle' }, noise: { level: 0.08, decay: 0.005, type: 'bp', cutoff: 2000 } },
+    clave: { tone: { f1: 2500, f0: 2480, pd: 0.01, decay: 0.045, level: 0.35 } },
+    triangle: { tone: { f1: 4200, f0: 4200, pd: 0.01, decay: 1.2, level: 0.08 }, metal: { level: 0.03, decay: 0.8, cutoff: 9000 } },
+    conga: { tone: { f1: 240, f0: 196, pd: 0.02, decay: 0.32, level: 0.6 }, noise: { level: 0.12, decay: 0.02, type: 'bp', cutoff: 1800, q: 0.9 } },
+    congahi: { tone: { f1: 330, f0: 285, pd: 0.015, decay: 0.24, level: 0.55 }, noise: { level: 0.2, decay: 0.015, type: 'bp', cutoff: 2600, q: 1 } },
+    bongo: { tone: { f1: 480, f0: 420, pd: 0.01, decay: 0.14, level: 0.45 }, noise: { level: 0.15, decay: 0.01, type: 'bp', cutoff: 3200, q: 1.2 } },
+    cowbell: { tone: { f1: 560, f0: 560, pd: 0.01, decay: 0.28, level: 0.16, wave: 'square' }, metal: { level: 0.05, decay: 0.2, cutoff: 2500 } },
+    snap: { noise: { level: 0.5, decay: 0.035, type: 'bp', cutoff: 2300, q: 1.6 }, tone: { f1: 1900, f0: 1700, pd: 0.005, decay: 0.012, level: 0.15 } }
+  };
+
+  // Kits replace sounds by name, so one drum pattern plays in any genre. Missing names fall back to acoustic.
+  var chipNoise = function (lvl, dec, cut, rate) { return { level: lvl * 1.5, decay: dec, type: 'hp', cutoff: cut, color: 'sh', rate: rate }; };
+  var chipTone = function (f1, f0, pd, dec, lvl) { return { f1: f1, f0: f0, pd: pd, decay: dec, level: lvl * 1.4, wave: 'square' }; };
+  var KITS = {
+    acoustic: {},
+    rock: {
+      kick: { tone: { f1: 170, f0: 52, pd: 0.035, decay: 0.38, level: 1.1 }, noise: { level: 0.3, decay: 0.008, type: 'hp', cutoff: 3500 } },
+      snare: { tone: { f1: 240, f0: 190, pd: 0.02, decay: 0.13, level: 0.5 }, noise: { level: 0.8, decay: 0.2, type: 'bp', cutoff: 2600, q: 0.5 } },
+      hat: { metal: { level: 0.36, decay: 0.05, cutoff: 8000 }, noise: { level: 0.15, decay: 0.04, type: 'hp', cutoff: 9000 } },
+      crash: { metal: { level: 0.3, decay: 2.0, cutoff: 4000 }, noise: { level: 0.3, decay: 1.8, type: 'hp', cutoff: 4500 } },
+      taiko: { tone: { f1: 160, f0: 70, pd: 0.08, decay: 0.55, level: 1.0 }, noise: { level: 0.3, decay: 0.05, type: 'lp', cutoff: 1500 } }
+    },
+    electronic: {
+      kick: { tone: { f1: 130, f0: 45, pd: 0.06, decay: 1.0, level: 1.15, drive: 0.5 }, noise: { level: 0.08, decay: 0.004, type: 'hp', cutoff: 4000 } },
+      softkick: { tone: { f1: 110, f0: 44, pd: 0.06, decay: 0.7, level: 0.9, drive: 0.3 } },
+      snare: { tone: { f1: 210, f0: 180, pd: 0.02, decay: 0.07, level: 0.35 }, noise: { level: 0.6, decay: 0.18, type: 'bp', cutoff: 4800, q: 0.6 } },
+      hat: { metal: { level: 0.3, decay: 0.035, cutoff: 9000 } },
+      ohat: { metal: { level: 0.28, decay: 0.38, cutoff: 8500 } },
+      tomlo: { tone: { f1: 130, f0: 85, pd: 0.15, decay: 0.55, level: 0.85, drive: 0.2 } },
+      tom: { tone: { f1: 180, f0: 120, pd: 0.15, decay: 0.45, level: 0.8, drive: 0.2 } },
+      tomhi: { tone: { f1: 260, f0: 170, pd: 0.12, decay: 0.38, level: 0.75 } },
+      rim: { tone: { f1: 2000, f0: 1900, pd: 0.005, decay: 0.02, level: 0.35 } },
+      taiko: { tone: { f1: 90, f0: 40, pd: 0.1, decay: 1.2, level: 1.1, drive: 0.5 } },
+      crash: { noise: { level: 0.3, decay: 1.4, type: 'hp', cutoff: 6000 }, metal: { level: 0.15, decay: 1.2, cutoff: 6000 } },
+      shaker: { noise: { level: 0.28, decay: 0.04, type: 'hp', cutoff: 8000, attack: 0.005 } }
+    },
+    chip: {
+      kick: { tone: chipTone(260, 50, 0.025, 0.14, 0.7) },
+      softkick: { tone: chipTone(200, 50, 0.025, 0.12, 0.55) },
+      snare: { noise: chipNoise(0.55, 0.13, 800, 6000), tone: chipTone(240, 160, 0.02, 0.05, 0.3) },
+      brush: { noise: chipNoise(0.3, 0.12, 2000, 9000) },
+      clap: { noise: chipNoise(0.5, 0.1, 1000, 5000) },
+      hat: { noise: chipNoise(0.3, 0.03, 6000, 16000) },
+      ohat: { noise: chipNoise(0.28, 0.2, 6000, 16000) },
+      shaker: { noise: chipNoise(0.2, 0.04, 7000, 14000) },
+      tamb: { noise: chipNoise(0.22, 0.1, 6500, 15000) },
+      tomlo: { tone: chipTone(200, 80, 0.06, 0.22, 0.55) },
+      tom: { tone: chipTone(300, 120, 0.06, 0.2, 0.55) },
+      tomhi: { tone: chipTone(420, 180, 0.05, 0.18, 0.5) },
+      taiko: { tone: chipTone(180, 45, 0.05, 0.3, 0.75) },
+      taikorim: { tone: chipTone(1200, 1200, 0.01, 0.02, 0.3) },
+      shime: { tone: chipTone(420, 300, 0.03, 0.08, 0.4) },
+      rim: { tone: chipTone(1200, 1200, 0.01, 0.02, 0.3) },
+      boom: { tone: chipTone(120, 30, 0.2, 0.8, 0.8), noise: { level: 0.3, decay: 0.6, type: 'lp', cutoff: 800, color: 'sh', rate: 2000 } },
+      crash: { noise: chipNoise(0.3, 0.8, 3000, 12000) },
+      ride: { noise: chipNoise(0.2, 0.4, 5000, 18000) },
+      woodblock: { tone: chipTone(800, 800, 0.01, 0.04, 0.35) },
+      clave: { tone: chipTone(1600, 1600, 0.01, 0.04, 0.3) },
+      triangle: { tone: chipTone(2000, 2000, 0.01, 0.4, 0.08) }
+    },
+    lofi: {
+      kick: { tone: { f1: 100, f0: 48, pd: 0.04, decay: 0.3, level: 0.9 }, noise: { level: 0.1, decay: 0.02, type: 'lp', cutoff: 800 } },
+      snare: { noise: { level: 0.45, decay: 0.17, type: 'bp', cutoff: 2200, q: 0.6, color: 'pink' }, tone: { f1: 220, f0: 180, pd: 0.02, decay: 0.08, level: 0.25 } },
+      hat: { metal: { level: 0.14, decay: 0.035, cutoff: 6000 }, noise: { level: 0.1, decay: 0.03, type: 'bp', cutoff: 7000, q: 0.8 } },
+      ohat: { metal: { level: 0.14, decay: 0.2, cutoff: 6000 } },
+      clap: { noise: { level: 0.4, decay: 0.14, type: 'bp', cutoff: 1100, q: 1.2, bursts: 3, spacing: 0.012, color: 'pink' } },
+      crash: { metal: { level: 0.14, decay: 1.0, cutoff: 5000 }, noise: { level: 0.12, decay: 0.8, type: 'bp', cutoff: 6000 } },
+      taiko: { tone: { f1: 95, f0: 50, pd: 0.06, decay: 0.45, level: 0.9 }, noise: { level: 0.15, decay: 0.04, type: 'lp', cutoff: 600 } }
+    },
+    jazz: {
+      kick: { tone: { f1: 85, f0: 50, pd: 0.05, decay: 0.3, level: 0.75 } },
+      snare: { noise: { level: 0.35, decay: 0.22, type: 'bp', cutoff: 3500, q: 0.5, attack: 0.015, color: 'pink' } },
+      hat: { metal: { level: 0.2, decay: 0.06, cutoff: 7000 } },
+      ohat: { metal: { level: 0.22, decay: 1.3, cutoff: 6000 }, tone: { f1: 3300, f0: 3300, pd: 0.01, decay: 0.8, level: 0.05 } },
+      ride: { metal: { level: 0.22, decay: 1.3, cutoff: 6000 }, tone: { f1: 3300, f0: 3300, pd: 0.01, decay: 0.8, level: 0.05 } },
+      crash: { metal: { level: 0.22, decay: 2.2, cutoff: 4500 }, noise: { level: 0.15, decay: 1.8, type: 'hp', cutoff: 5000 } },
+      taiko: { tone: { f1: 110, f0: 75, pd: 0.08, decay: 0.5, level: 0.8 } }
+    },
+    orchestral: {
+      kick: { tone: { f1: 75, f0: 52, pd: 0.08, decay: 1.1, level: 1.0 }, noise: { level: 0.25, decay: 0.25, type: 'lp', cutoff: 350 } },
+      snare: { tone: { f1: 280, f0: 220, pd: 0.02, decay: 0.08, level: 0.3 }, noise: { level: 0.55, decay: 0.22, type: 'bp', cutoff: 4200, q: 0.5 } },
+      hat: { metal: { level: 0.12, decay: 0.6, cutoff: 8000 } },
+      ohat: { metal: { level: 0.2, decay: 2.0, cutoff: 5000 }, noise: { level: 0.12, decay: 1.6, type: 'hp', cutoff: 6000 } },
+      crash: { metal: { level: 0.28, decay: 3.0, cutoff: 3500 }, noise: { level: 0.25, decay: 2.6, type: 'hp', cutoff: 4000 } },
+      tomlo: { tone: { f1: 100, f0: 82, pd: 0.05, decay: 1.3, level: 0.85 }, noise: { level: 0.2, decay: 0.05, type: 'lp', cutoff: 800 } },
+      tom: { tone: { f1: 125, f0: 104, pd: 0.05, decay: 1.2, level: 0.8 }, noise: { level: 0.2, decay: 0.05, type: 'lp', cutoff: 900 } },
+      tomhi: { tone: { f1: 155, f0: 131, pd: 0.05, decay: 1.0, level: 0.75 }, noise: { level: 0.2, decay: 0.05, type: 'lp', cutoff: 1000 } }
+    },
+    taiko: {
+      kick: DRUMS.taiko,
+      softkick: { tone: { f1: 100, f0: 60, pd: 0.09, decay: 0.6, level: 0.8 }, noise: { level: 0.3, decay: 0.06, type: 'lp', cutoff: 700 } },
+      snare: DRUMS.shime,
+      rim: DRUMS.taikorim,
+      clap: { tone: { f1: 2200, f0: 2100, pd: 0.005, decay: 0.04, level: 0.4 }, noise: { level: 0.2, decay: 0.01, type: 'bp', cutoff: 3000 } },
+      hat: { tone: { f1: 3100, f0: 3100, pd: 0.01, decay: 0.25, level: 0.12 }, metal: { level: 0.12, decay: 0.2, cutoff: 5000 } },
+      ohat: { tone: { f1: 3100, f0: 3100, pd: 0.01, decay: 0.8, level: 0.12 }, metal: { level: 0.12, decay: 0.6, cutoff: 5000 } },
+      crash: { tone: { f1: 110, f0: 95, pd: 0.4, decay: 3.5, level: 0.5 }, metal: { level: 0.2, decay: 3, cutoff: 2000 }, noise: { level: 0.15, decay: 2.5, type: 'bp', cutoff: 600, q: 0.6 } },
+      tom: { tone: { f1: 150, f0: 90, pd: 0.1, decay: 0.6, level: 0.9 }, noise: { level: 0.35, decay: 0.06, type: 'lp', cutoff: 900 } },
+      tomlo: DRUMS.taiko,
+      tomhi: DRUMS.shime
+    },
+    folk: {
+      kick: { tone: { f1: 95, f0: 70, pd: 0.04, decay: 0.28, level: 0.9 }, noise: { level: 0.22, decay: 0.04, type: 'lp', cutoff: 1400 } },
+      softkick: { tone: { f1: 90, f0: 68, pd: 0.04, decay: 0.24, level: 0.7 }, noise: { level: 0.15, decay: 0.03, type: 'lp', cutoff: 1200 } },
+      snare: { tone: { f1: 190, f0: 160, pd: 0.02, decay: 0.12, level: 0.45 }, noise: { level: 0.3, decay: 0.05, type: 'bp', cutoff: 1800, q: 0.8 } },
+      hat: DRUMS.shaker,
+      ohat: DRUMS.tamb,
+      crash: { metal: { level: 0.25, decay: 0.5, cutoff: 7000 }, noise: { level: 0.2, decay: 0.4, type: 'hp', cutoff: 7500 } },
+      tom: { tone: { f1: 120, f0: 85, pd: 0.04, decay: 0.3, level: 0.85 }, noise: { level: 0.2, decay: 0.04, type: 'lp', cutoff: 1300 } },
+      taiko: { tone: { f1: 100, f0: 66, pd: 0.05, decay: 0.4, level: 1.0 }, noise: { level: 0.25, decay: 0.05, type: 'lp', cutoff: 1200 } }
+    }
+  };
+  var GM_DRUMS = { 35: 'softkick', 36: 'kick', 37: 'rim', 38: 'snare', 39: 'clap', 40: 'snare', 41: 'tomlo', 42: 'hat', 43: 'tomlo', 44: 'hat', 45: 'tom', 46: 'ohat', 47: 'tom', 48: 'tomhi', 49: 'crash', 50: 'tomhi', 51: 'ride', 54: 'tamb', 56: 'woodblock', 70: 'shaker', 75: 'clave', 81: 'triangle' };
+  DM.DRUMS = DRUMS;
+  DM.KITS = KITS;
+  DM.KIT_NAMES = Object.keys(KITS);
+  var METAL_F = [205.3, 304.4, 369.6, 522.7, 540, 800];
+
+  function DrumVoice(sr, rc, vel, pan, rng, tune) {
+    this.sr = sr; this.t = 0; this.done = false; this.kill = 1; this.killing = false;
+    var g = DM.panGains(pan || 0); this.gl = g[0]; this.gr = g[1];
+    var amp = DM.velAmp(vel, 1.3) * 0.5;
+    tune = tune || 1;
+    this.tone = null; this.nz = null; this.metal = null;
+    if (rc.tone) {
+      var t = rc.tone;
+      this.tone = { ph: 0, f0: t.f0 * tune, f1: (t.f1 || t.f0) * tune, pk: Math.exp(-1 / ((t.pd || 0.03) * sr)), pe: 1,
+        a: (t.level || 1) * amp, k: Math.exp(-6.9 / ((t.decay || 0.2) * sr)),
+        wave: t.wave === 'triangle' ? 1 : t.wave === 'square' ? 2 : 0, drive: t.drive ? 1 + t.drive * 6 : 0 };
+    }
+    if (rc.noise) {
+      var nz = rc.noise;
+      var f = new DM.SVF(sr);
+      f.set((nz.cutoff || 3000) * tune, nz.q || 0.7);
+      this.nz = { f: f, mode: nz.type === 'bp' ? 1 : nz.type === 'hp' ? 2 : 0, a: (nz.level || 0.5) * amp,
+        k: Math.exp(-6.9 / ((nz.decay || 0.1) * sr)), atk: nz.attack ? 1 / (nz.attack * sr) : 1, e: nz.attack ? 0 : 1,
+        color: nz.color || 'white', bursts: nz.bursts || 1, spacing: Math.round((nz.spacing || 0.01) * sr), gen: new DM.Noise(rng),
+        shInc: (nz.rate || 8000) / sr, shPh: 1, shV: 0 };
+    }
+    if (rc.metal) {
+      var m = rc.metal, hp = new DM.SVF(sr); hp.set(m.cutoff || 7000, 0.9);
+      var hp2 = new DM.SVF(sr); hp2.set(m.cutoff || 7000, 0.7);
+      var phs = [];
+      for (var i = 0; i < 6; i++) phs.push({ ph: rng.next(), inc: METAL_F[i] * 1.7 * tune / sr });
+      this.metal = { phs: phs, hp: hp, hp2: hp2, a: (m.level || 0.3) * amp, k: Math.exp(-6.9 / ((m.decay || 0.1) * sr)) };
+    }
+  }
+  DrumVoice.prototype.render = function (L, R, off, n, tmp) {
+    var alive = false, s;
+    for (s = 0; s < n; s++) tmp[s] = 0;
+    var T = this.tone;
+    if (T && T.a > 1e-5) {
+      alive = true;
+      for (s = 0; s < n; s++) {
+        var f = T.f0 + (T.f1 - T.f0) * T.pe; T.pe *= T.pk;
+        var ph = T.ph;
+        var y = T.wave === 1 ? (ph < 0.5 ? 4 * ph - 1 : 3 - 4 * ph) : T.wave === 2 ? (ph < 0.5 ? 0.7 : -0.7) : fsin(ph);
+        if (T.drive) y = Math.tanh(y * T.drive) / Math.tanh(T.drive);
+        tmp[s] += y * T.a;
+        T.ph += f / this.sr; if (T.ph >= 1) T.ph -= 1;
+        T.a *= T.k;
+      }
+    }
+    var N = this.nz;
+    if (N && (N.a > 1e-5 || this.t < N.bursts * N.spacing)) {
+      alive = true;
+      for (s = 0; s < n; s++) {
+        var w;
+        if (N.color === 'sh') { N.shPh += N.shInc; if (N.shPh >= 1) { N.shPh -= Math.floor(N.shPh); N.shV = N.gen.white(); } w = N.shV; }
+        else w = N.color === 'pink' ? N.gen.pink() : N.color === 'brown' ? N.gen.brownian() : N.gen.white();
+        var lt = this.t + s;
+        var e = N.a;
+        if (N.bursts > 1 && lt < N.bursts * N.spacing) {
+          var within = (lt % N.spacing) / N.spacing;
+          e = (N.a / Math.pow(N.k, lt)) * Math.exp(-within * 4); // re-trigger bursts at full level
+        }
+        if (N.e < 1) { N.e += N.atk; if (N.e > 1) N.e = 1; }
+        tmp[s] += N.f.process(w, N.mode) * e * N.e;
+        N.a *= N.k;
+      }
+    }
+    var M = this.metal;
+    if (M && M.a > 1e-5) {
+      alive = true;
+      for (s = 0; s < n; s++) {
+        var x = 0;
+        for (var i = 0; i < 6; i++) { var o = M.phs[i]; x += o.ph < 0.5 ? 1 : -1; o.ph += o.inc; if (o.ph >= 1) o.ph -= 1; }
+        x = M.hp2.process(M.hp.process(x * 0.16, 2), 2);
+        tmp[s] += x * M.a;
+        M.a *= M.k;
+      }
+    }
+    this.t += n;
+    if (!alive) this.done = true;
+    DM.mixOut(this, tmp, L, R, off, n);
+  };
+
+  // ======================= PRESETS =======================
+  // family = picker group in the UI; role = what the part does (ensembles re-orchestrate by role).
+  // Any preset also accepts insert effects applied on its layer bus: drive (0..1), crush (bits), lowpass (Hz).
+  var P = function (family, role, desc, params) { params.family = family; params.role = role; params.desc = desc; return params; };
+  var CHIP_ENV = { cutoff: 14000, keytrack: 0 };
+  function chip(o) { for (var k in CHIP_ENV) if (o[k] == null) o[k] = CHIP_ENV[k]; o.type = 'analog'; return o; }
+  var PRESETS = {
+    // ---- Keys
+    felt_piano: P('Keys', 'keys', 'Soft, muted felt piano. Intimate, BotW-field style.', { type: 'piano', bright: 0.32, decay: 6, felt: 0.75, hammer: 0.3, release: 0.5 }),
+    grand_piano: P('Keys', 'keys', 'Brighter concert piano.', { type: 'piano', bright: 0.65, decay: 8, felt: 0.1, hammer: 0.5, release: 0.3 }),
+    detuned_piano: P('Keys', 'keys', 'Old, out-of-tune upright (horror, saloon).', { type: 'piano', bright: 0.45, decay: 6, felt: 0.3, hammer: 0.45, release: 0.6, stretch: 0.003 }),
+    rhodes: P('Keys', 'keys', 'FM electric piano with tremolo.', { type: 'fm', ratio: 1, index: 1.8, indexDecay: 0.7, decay: 4, tine: 0.28, tineRatio: 14, tremDepth: 0.12, tremRate: 4.5 }),
+    lofi_keys: P('Keys', 'keys', 'Dusty, darker electric piano.', { type: 'fm', ratio: 1, index: 1.1, indexDecay: 0.5, decay: 3.2, tine: 0.08, tremDepth: 0.18, tremRate: 3.2, lowpass: 3200 }),
+    glass_keys: P('Keys', 'keys', 'Soft glassy FM keys.', { type: 'fm', ratio: 2, index: 1.2, indexDecay: 0.8, decay: 3, tine: 0.05, tineRatio: 7, release: 0.6 }),
+    organ: P('Keys', 'keys', 'Drawbar organ with rotary wobble (rock, gospel).', { type: 'organ', drawbars: [0.6, 1, 0.5, 0.45, 0.2, 0.25, 0.05, 0.05, 0.15], perc: 0.25, leslie: 0.45, level: 0.13 }),
+    church_organ: P('Keys', 'pad', 'Pipe-organ registration (sacred, horror).', { type: 'organ', drawbars: [0.8, 1, 0.3, 0.8, 0.3, 0.6, 0.1, 0.2, 0.4], perc: 0, leslie: 0.05, a: 0.05, r: 0.35, level: 0.11 }),
+    poly_synth: P('Keys', 'keys', '80s polysynth stab/chords.', { type: 'analog', wave: 'saw', unison: 3, detune: 10, cutoff: 1600, reso: 0.9, envAmt: 1.6, fa: 0.005, fd: 0.5, fs: 0.3, fr: 0.4, a: 0.008, d: 0.8, s: 0.5, r: 0.35, level: 0.15, poles: 4 }),
+    toy_piano: P('Keys', 'keys', 'Tinkly toy piano.', { type: 'modal', partials: [[1, 1, 1], [2.01, 0.35, 0.5], [3.9, 0.2, 0.3], [7.3, 0.1, 0.2]], decay: 1.3, strike: 0.3, level: 0.22 }),
+    // ---- Plucked
+    harp: P('Plucked', 'pluck', 'Concert harp (rings out).', { type: 'pluck', decay: 5, bright: 0.45, damping: 0.42, ring: true }),
+    nylon_guitar: P('Plucked', 'pluck', 'Nylon guitar, warm body.', { type: 'pluck', decay: 3.5, bright: 0.55, damping: 0.5, mute: 0.12, body: 0.35, bodyFreq: 190 }),
+    jazz_guitar: P('Plucked', 'pluck', 'Mellow archtop jazz guitar.', { type: 'pluck', decay: 2, bright: 0.35, damping: 0.62, mute: 0.15, body: 0.45, bodyFreq: 170 }),
+    acoustic_guitar: P('Plucked', 'pluck', 'Steel-string acoustic guitar: bright strums (folk, pop).', { type: 'pluck', decay: 3, bright: 0.75, damping: 0.4, mute: 0.12, body: 0.3, bodyFreq: 210 }),
+    clean_guitar: P('Plucked', 'pluck', 'Clean electric guitar: skanks, funk chops, arpeggios.', { type: 'pluck', decay: 2.2, bright: 0.62, damping: 0.45, mute: 0.06, pick: 0.1 }),
+    banjo: P('Plucked', 'pluck', 'Twangy banjo (country, bluegrass, frontier).', { type: 'pluck', decay: 1.2, bright: 0.9, damping: 0.3, mute: 0.08, pick: 0.07, body: 0.4, bodyFreq: 400 }),
+    harpsichord: P('Plucked', 'pluck', 'Baroque harpsichord (castle, court, old-world).', { type: 'pluck', decay: 2.5, bright: 0.95, damping: 0.25, mute: 0.3, pick: 0.06 }),
+    dist_guitar: P('Plucked', 'pluck', 'Overdriven electric guitar (power chords).', { type: 'pluck', decay: 2.8, bright: 0.75, damping: 0.38, mute: 0.1, drive: 0.75, lowpass: 4500 }),
+    koto: P('Plucked', 'pluck', 'Bright plucked koto.', { type: 'pluck', decay: 3, bright: 0.85, damping: 0.3, pick: 0.08, ring: true }),
+    shamisen: P('Plucked', 'pluck', 'Snappy shamisen.', { type: 'pluck', decay: 1.4, bright: 0.95, damping: 0.2, mute: 0.08, pick: 0.05, drive: 0.15 }),
+    sitar: P('Plucked', 'pluck', 'Buzzy sitar-like string.', { type: 'pluck', decay: 3.5, bright: 0.9, damping: 0.22, ring: true, drive: 0.25, pick: 0.04 }),
+    pizzicato: P('Plucked', 'strings', 'Pizzicato strings.', { type: 'pluck', decay: 0.7, bright: 0.45, damping: 0.55, mute: 0.06, body: 0.3, bodyFreq: 250 }),
+    synth_pluck: P('Plucked', 'pluck', 'Synth pluck for arps (synthwave, EDM).', { type: 'analog', wave: 'saw', unison: 2, detune: 8, cutoff: 600, reso: 1.5, envAmt: 3.5, fa: 0.001, fd: 0.18, fs: 0, a: 0.001, d: 0.35, s: 0, r: 0.2, level: 0.24 }),
+    // ---- Mallets & Bells
+    xylophone: P('Mallets & Bells', 'mallet', 'Bright, dry xylophone (playful, cartoon).', { type: 'modal', partials: [[1, 1, 1], [3.0, 0.3, 0.3], [6.0, 0.12, 0.2]], decay: 0.6, strike: 0.5, level: 0.26 }),
+    marimba: P('Mallets & Bells', 'mallet', 'Wooden marimba.', { type: 'modal', partials: [[1, 1, 1], [3.99, 0.25, 0.25], [10.65, 0.08, 0.1]], decay: 1.2, strike: 0.4, level: 0.3 }),
+    vibraphone: P('Mallets & Bells', 'mallet', 'Vibraphone (damped on note end).', { type: 'modal', partials: [[1, 1, 1], [3.98, 0.2, 0.4], [9.4, 0.05, 0.2]], decay: 4.5, damp: true, release: 0.6, level: 0.22 }),
+    kalimba: P('Mallets & Bells', 'mallet', 'Kalimba / thumb piano.', { type: 'modal', partials: [[1, 1, 1], [5.95, 0.18, 0.3], [17.4, 0.05, 0.1]], decay: 1.6, strike: 0.25, level: 0.3 }),
+    steel_drum: P('Mallets & Bells', 'mallet', 'Caribbean steel pan.', { type: 'modal', partials: [[1, 1, 1], [2, 0.5, 0.8], [3, 0.25, 0.6], [4.2, 0.15, 0.4]], decay: 1.2, strike: 0.3, level: 0.18 }),
+    glockenspiel: P('Mallets & Bells', 'bell', 'Glockenspiel / bells.', { type: 'modal', partials: [[1, 1, 1], [2.76, 0.35, 0.6], [5.4, 0.15, 0.4], [8.93, 0.08, 0.3]], decay: 3, strike: 0.2, level: 0.16 }),
+    celesta: P('Mallets & Bells', 'bell', 'Celesta (fairy-tale sparkle).', { type: 'modal', partials: [[1, 1, 1], [4, 0.12, 0.3], [10, 0.03, 0.1]], decay: 1.4, strike: 0.15, level: 0.24 }),
+    music_box: P('Mallets & Bells', 'bell', 'Music box comb.', { type: 'modal', partials: [[1, 1, 1], [3.0, 0.12, 0.4], [5.2, 0.05, 0.3]], decay: 2.2, strike: 0.15, level: 0.26 }),
+    fm_bell: P('Mallets & Bells', 'bell', 'Glassy FM bell.', { type: 'fm', ratio: 3.5, index: 3, indexDecay: 1.4, indexSustain: 0.2, decay: 5, tine: 0, release: 1.2 }),
+    temple_bell: P('Mallets & Bells', 'bell', 'Large inharmonic bell.', { type: 'modal', partials: [[0.5, 0.6, 1.6], [1, 1, 1], [1.183, 0.5, 0.9], [1.506, 0.4, 0.7], [2, 0.35, 0.6], [2.514, 0.25, 0.5], [2.662, 0.2, 0.4], [3.011, 0.15, 0.35]], decay: 6, strike: 0.1, level: 0.12, decayTrack: 0.3 }),
+    timpani: P('Mallets & Bells', 'timpani', 'Tuned timpani (use chord roots).', { type: 'modal', partials: [[1, 1, 1], [1.5, 0.5, 0.8], [1.98, 0.35, 0.7], [2.44, 0.2, 0.5]], decay: 2.5, strike: 0.6, level: 0.4, decayTrack: 0.2 }),
+    // ---- Strings
+    strings: P('Strings', 'strings', 'String ensemble.', { type: 'analog', wave: 'saw', unison: 3, detune: 9, cutoff: 2200, reso: 0.7, keytrack: 0.6, a: 0.35, d: 0.5, s: 0.85, r: 0.7, envAmt: 0.4, fa: 0.4, fd: 1, fs: 0.6, fr: 0.8, vibRate: 5, vibDepth: 0.08, vibDelay: 0.4, level: 0.15, poles: 4 }),
+    slow_strings: P('Strings', 'strings', 'Slow-bowed lush strings.', { type: 'analog', wave: 'saw', unison: 4, detune: 11, cutoff: 1800, reso: 0.7, keytrack: 0.6, a: 0.9, d: 0.8, s: 0.9, r: 1.3, envAmt: 0.5, fa: 1, fd: 1.5, fs: 0.6, fr: 1.2, vibRate: 4.8, vibDepth: 0.1, vibDelay: 0.5, level: 0.14, poles: 4 }),
+    dark_strings: P('Strings', 'strings', 'Detuned, uneasy strings (horror).', { type: 'analog', wave: 'saw', unison: 3, detune: 18, cutoff: 700, reso: 2.2, a: 0.6, d: 0.5, s: 0.85, r: 1.2, envAmt: 0.4, fa: 1, fs: 0.5, vibRate: 4, vibDepth: 0.22, vibDelay: 0.1, level: 0.13, poles: 4 }),
+    cello: P('Strings', 'lowstrings', 'Low bowed strings.', { type: 'analog', wave: 'saw', unison: 2, detune: 5, cutoff: 900, reso: 0.7, a: 0.15, d: 0.4, s: 0.85, r: 0.4, envAmt: 0.6, fa: 0.15, fd: 0.6, fs: 0.5, vibRate: 5, vibDepth: 0.1, vibDelay: 0.3, level: 0.15, poles: 4 }),
+    fiddle: P('Strings', 'strings', 'Solo folk fiddle with slides.', { type: 'analog', wave: 'saw', cutoff: 3000, reso: 1.2, a: 0.06, d: 0.2, s: 0.9, r: 0.15, vibRate: 5.8, vibDepth: 0.25, vibDelay: 0.15, bend: -0.6, bendTime: 0.06, level: 0.12 }),
+    erhu: P('Strings', 'strings', 'Expressive erhu-like bowed string.', { type: 'analog', wave: 'saw', cutoff: 2200, reso: 2, a: 0.08, d: 0.3, s: 0.9, r: 0.2, vibRate: 5.5, vibDepth: 0.4, vibDelay: 0.12, bend: -1.5, bendTime: 0.12, level: 0.14 }),
+    // ---- Pads & Drones
+    warm_pad: P('Pads & Drones', 'pad', 'Slow warm analog pad.', { type: 'analog', wave: 'saw', unison: 5, detune: 14, cutoff: 900, reso: 0.6, keytrack: 0.3, a: 1.2, d: 1, s: 0.9, r: 2.0, envAmt: 0.8, fa: 1.5, fd: 2, fs: 0.5, fr: 2, level: 0.16, poles: 4 }),
+    glass_pad: P('Pads & Drones', 'pad', 'Soft glassy pad.', { type: 'analog', wave: 'triangle', unison: 3, detune: 6, cutoff: 4000, reso: 1.4, a: 0.8, d: 1, s: 0.8, r: 2.5, level: 0.16 }),
+    supersaw_pad: P('Pads & Drones', 'pad', 'Wide supersaw pad (synthwave, trance).', { type: 'analog', wave: 'saw', unison: 7, detune: 22, cutoff: 2600, reso: 0.7, keytrack: 0.3, a: 0.5, d: 1, s: 0.85, r: 1.4, level: 0.09, poles: 4 }),
+    drone_pad: P('Pads & Drones', 'pad', 'Metallic evolving FM drone (ambient, horror).', { type: 'fm', ratio: 1.414, index: 2.5, indexDecay: 8, indexSustain: 0.5, decay: 14, release: 2.5, tine: 0, attack: 1.2 }),
+    wind_pad: P('Pads & Drones', 'pad', 'Pitched breathy wind (filtered noise).', { type: 'analog', wave: 'saw', waveGain: 0, noise: 1, filterType: 'bp', cutoff: 700, reso: 3.5, keytrack: 1, a: 1.5, d: 1, s: 0.8, r: 2.5, envAmt: 0.6, fa: 2, fd: 2, fs: 0.5, fr: 2, level: 0.55 }),
+    accordion: P('Pads & Drones', 'pad', 'Accordion / musette reeds.', { type: 'analog', wave: 'saw', unison: 3, detune: 14, cutoff: 2600, reso: 0.7, a: 0.05, d: 0.2, s: 0.9, r: 0.12, tremRate: 5.5, tremDepth: 0.15, level: 0.1 }),
+    // ---- Winds
+    flute: P('Winds', 'lead', 'Breathy flute.', { type: 'wind', breath: 0.09, chiff: 0.35, harmonics: [0.15, 0.06], a: 0.06, r: 0.15, vibDepth: 0.18, level: 0.18 }),
+    ocarina: P('Winds', 'lead', 'Pure, round ocarina.', { type: 'wind', breath: 0.04, chiff: 0.15, harmonics: [0.04, 0.01], a: 0.05, r: 0.12, vibDepth: 0.12, level: 0.2 }),
+    pan_flute: P('Winds', 'lead', 'Airy pan flute.', { type: 'wind', breath: 0.18, chiff: 0.6, harmonics: [0.08, 0.03], a: 0.04, r: 0.25, vibDepth: 0.1, level: 0.18 }),
+    tin_whistle: P('Winds', 'lead', 'Celtic tin whistle with grace slides.', { type: 'wind', breath: 0.06, chiff: 0.5, harmonics: [0.25, 0.1], a: 0.03, r: 0.1, vibRate: 6, vibDepth: 0.22, bend: -1, bendTime: 0.05, level: 0.16 }),
+    shakuhachi: P('Winds', 'lead', 'Breathy bamboo flute with bends.', { type: 'wind', breath: 0.35, chiff: 0.8, harmonics: [0.1, 0.04], a: 0.12, r: 0.3, vibRate: 4.5, vibDepth: 0.35, vibDelay: 0.4, bend: -2, bendTime: 0.18, level: 0.18 }),
+    oboe: P('Winds', 'lead', 'Nasal, pastoral oboe.', { type: 'analog', wave: 'saw', filterType: 'bp', cutoff: 1400, reso: 1.6, keytrack: 1, a: 0.04, d: 0.2, s: 0.9, r: 0.1, vibRate: 5.2, vibDepth: 0.12, vibDelay: 0.25, level: 0.2 }),
+    clarinet: P('Winds', 'lead', 'Woody clarinet.', { type: 'analog', wave: 'square', cutoff: 1800, reso: 0.7, keytrack: 0.8, a: 0.04, d: 0.2, s: 0.9, r: 0.12, vibDepth: 0.08, vibDelay: 0.3, noise: 0.02, level: 0.11 }),
+    soft_sax: P('Winds', 'lead', 'Breathy soft saxophone (jazz, lo-fi).', { type: 'formant', vowel: 'o', unison: 1, detune: 0, a: 0.05, r: 0.15, vibRate: 5, vibDepth: 0.18, breath: 0.06, level: 0.32 }),
+    // ---- Brass
+    brass: P('Brass', 'brass', 'Brass section stabs/swells.', { type: 'analog', wave: 'saw', unison: 2, detune: 5, cutoff: 650, reso: 0.8, keytrack: 0.5, envAmt: 2.2, fa: 0.04, fd: 0.35, fs: 0.45, fr: 0.3, a: 0.03, d: 0.3, s: 0.8, r: 0.25, vibRate: 5.5, vibDepth: 0.06, vibDelay: 0.35, level: 0.15, velToCutoff: 0.8 }),
+    french_horn: P('Brass', 'brass', 'Warm, heroic horns.', { type: 'analog', wave: 'saw', cutoff: 500, reso: 0.7, envAmt: 1.5, fa: 0.1, fd: 0.5, fs: 0.6, a: 0.08, d: 0.4, s: 0.85, r: 0.3, vibDepth: 0.06, vibDelay: 0.4, level: 0.17, poles: 4 }),
+    trumpet: P('Brass', 'brass', 'Solo trumpet with scoop.', { type: 'analog', wave: 'saw', cutoff: 1200, reso: 0.8, envAmt: 2.0, fa: 0.03, fd: 0.25, fs: 0.55, a: 0.02, d: 0.3, s: 0.85, r: 0.15, vibDepth: 0.08, vibDelay: 0.25, bend: -0.8, bendTime: 0.04, level: 0.13, velToCutoff: 0.6 }),
+    tuba: P('Brass', 'bass', 'Round tuba (oom-pah marches, comic bass).', { type: 'analog', wave: 'saw', cutoff: 380, reso: 0.7, keytrack: 0.4, envAmt: 1.2, fa: 0.04, fd: 0.3, fs: 0.5, a: 0.03, d: 0.3, s: 0.8, r: 0.15, level: 0.2, poles: 4 }),
+    synth_brass: P('Brass', 'brass', '80s synth brass.', { type: 'analog', wave: 'saw', unison: 3, detune: 12, cutoff: 900, reso: 0.8, envAmt: 2.5, fa: 0.05, fd: 0.4, fs: 0.5, a: 0.04, d: 0.3, s: 0.85, r: 0.3, level: 0.1 }),
+    // ---- Leads
+    synth_lead: P('Leads', 'lead', 'Square lead.', { type: 'analog', wave: 'square', duty: 0.35, cutoff: 2500, reso: 1.0, envAmt: 1, fa: 0.01, fd: 0.3, fs: 0.4, a: 0.01, r: 0.15, vibDepth: 0.15, level: 0.1 }),
+    supersaw_lead: P('Leads', 'lead', 'Bright supersaw lead with scoop.', { type: 'analog', wave: 'saw', unison: 5, detune: 15, cutoff: 4500, reso: 0.9, a: 0.01, d: 0.3, s: 0.8, r: 0.2, vibDepth: 0.12, vibDelay: 0.3, bend: -1, bendTime: 0.05, level: 0.11 }),
+    lead_guitar: P('Leads', 'lead', 'Singing overdriven guitar lead.', { type: 'analog', wave: 'saw', unison: 2, detune: 6, cutoff: 3000, a: 0.005, d: 2, s: 0.6, r: 0.2, vibDepth: 0.3, vibDelay: 0.25, bend: -1, bendTime: 0.06, drive: 0.8, lowpass: 5000, level: 0.1 }),
+    theremin: P('Leads', 'lead', 'Wobbly theremin (sci-fi, eerie).', { type: 'wind', breath: 0, chiff: 0, harmonics: [0.02, 0], a: 0.15, r: 0.4, vibRate: 6, vibDepth: 0.6, vibDelay: 0, bend: -3, bendTime: 0.3, level: 0.18 }),
+    // ---- Bass
+    sub_bass: P('Bass', 'bass', 'Clean sine sub bass.', { type: 'analog', wave: 'sine', cutoff: 400, keytrack: 0.3, a: 0.01, d: 0.3, s: 0.9, r: 0.2, level: 0.32 }),
+    synth_bass: P('Bass', 'bass', 'Punchy filtered saw bass.', { type: 'analog', wave: 'saw', sub: 0.5, cutoff: 300, reso: 1.2, envAmt: 2.5, fa: 0.003, fd: 0.18, fs: 0.1, a: 0.003, d: 0.3, s: 0.7, r: 0.1, level: 0.16, poles: 4 }),
+    bass808: P('Bass', 'bass', 'Booming 808 bass with pitch drop.', { type: 'analog', wave: 'sine', cutoff: 2000, keytrack: 0, a: 0.002, d: 1.4, s: 0.25, r: 0.3, bend: 5, bendTime: 0.05, drive: 0.35, level: 0.34 }),
+    pluck_bass: P('Bass', 'bass', 'Plucked upright-ish bass.', { type: 'pluck', decay: 2.5, bright: 0.35, damping: 0.62, mute: 0.08 }),
+    upright_bass: P('Bass', 'bass', 'Woody jazz upright bass.', { type: 'pluck', decay: 1.6, bright: 0.25, damping: 0.7, mute: 0.1, body: 0.5, bodyFreq: 120 }),
+    bass_guitar: P('Bass', 'bass', 'Electric bass with grit.', { type: 'pluck', decay: 2.2, bright: 0.45, damping: 0.5, mute: 0.08, drive: 0.25 }),
+    // ---- Choir & Vox
+    choir_ah: P('Choir', 'choir', 'Choir "ah".', { type: 'formant', vowel: 'a', unison: 4, detune: 12, a: 0.6, r: 1.2, level: 0.6 }),
+    choir_oo: P('Choir', 'choir', 'Choir "oo" (dark, distant).', { type: 'formant', vowel: 'u', unison: 4, detune: 10, a: 0.8, r: 1.5, level: 0.45 }),
+    // ---- Chiptune (NES-style pulse/triangle)
+    chip_lead: P('Chiptune', 'lead', '8-bit pulse lead (25%).', chip({ wave: 'square', duty: 0.25, a: 0.002, d: 0.1, s: 0.7, r: 0.05, level: 0.11 })),
+    chip_square: P('Chiptune', 'keys', '8-bit square (50%).', chip({ wave: 'square', duty: 0.5, a: 0.002, d: 0.15, s: 0.6, r: 0.05, level: 0.11 })),
+    chip_pulse: P('Chiptune', 'strings', '8-bit thin pulse (12.5%) with vibrato.', chip({ wave: 'square', duty: 0.125, a: 0.01, d: 0.3, s: 0.7, r: 0.1, vibDepth: 0.15, vibDelay: 0.3, level: 0.1 })),
+    chip_pluck: P('Chiptune', 'pluck', '8-bit plucky arp.', chip({ wave: 'square', duty: 0.25, a: 0.001, d: 0.12, s: 0, r: 0.05, level: 0.2 })),
+    chip_pad: P('Chiptune', 'pad', '8-bit soft sustained square.', chip({ wave: 'square', duty: 0.5, cutoff: 3000, a: 0.3, d: 0.2, s: 0.9, r: 0.6, vibDepth: 0.1, level: 0.08 })),
+    chip_triangle: P('Chiptune', 'bass', '8-bit triangle bass.', chip({ wave: 'triangle', a: 0.002, d: 0.2, s: 0.8, r: 0.05, level: 0.3 })),
+    chip_blip: P('Chiptune', 'bell', '8-bit blip for sparkles.', chip({ wave: 'square', duty: 0.5, a: 0.001, d: 0.08, s: 0, r: 0.03, level: 0.18 })),
+    // ---- Drums
+    drums: P('Drums', 'drums', 'Synth drum kit; set "kit" to one of ' + Object.keys(KITS).join(', ') + '. Sounds: ' + Object.keys(DRUMS).join(' '), { type: 'drums' })
+  };
+  DM.PRESETS = PRESETS;
+  DM.VOICE_TYPES = ['piano', 'fm', 'pluck', 'modal', 'analog', 'wind', 'formant', 'organ', 'drums'];
+  DM.ROLES = ['keys', 'pluck', 'strings', 'lowstrings', 'pad', 'choir', 'lead', 'brass', 'bass', 'mallet', 'bell', 'timpani', 'drums'];
+  DM.presetFamilies = function () {
+    var out = {};
+    Object.keys(PRESETS).forEach(function (k) { var f = PRESETS[k].family; (out[f] = out[f] || []).push(k); });
+    return out;
+  };
+
+  // ======================= Instrument wrapper =======================
+  function Instrument(def, sr) {
+    if (typeof def === 'string') def = { preset: def };
+    var base = {};
+    if (def.preset) {
+      if (!PRESETS[def.preset]) throw new Error('Unknown preset "' + def.preset + '". Known: ' + Object.keys(PRESETS).join(', '));
+      var pr = PRESETS[def.preset];
+      for (var k in pr) base[k] = pr[k];
+    }
+    for (var k2 in def) if (k2 !== 'preset') base[k2] = def[k2];
+    this.p = base;
+    this.type = base.type;
+    if (DM.VOICE_TYPES.indexOf(this.type) < 0) throw new Error('Unknown instrument type "' + this.type + '"');
+    this.sr = sr;
+    this.gain = base.gain == null ? 1 : base.gain;
+    this.pan = base.pan || 0;
+    this.spread = base.spread == null ? 0.15 : base.spread;
+    this.maxVoices = base.maxVoices || (this.type === 'drums' ? 24 : 16);
+    this.transpose = base.transpose || 0;
+    this.tune = base.tune || 1;
+    this.isDrums = this.type === 'drums';
+    this.kit = base.kit || 'acoustic';
+    if (this.isDrums && !KITS[this.kit]) throw new Error('Unknown drum kit "' + this.kit + '". Known: ' + Object.keys(KITS).join(', '));
+  }
+  // validate a pitch spec that names a sound (drums)
+  Instrument.prototype.hasSound = function (name) { return this.isDrums && !!DRUMS[name]; };
+  // pitch: midi number (melodic) or drum name. Returns a voice.
+  // over (optional): per-note voice parameter overrides, e.g. { tremDepth: 0.8 } or { a: 1.2 } or { bend: -1 }.
+  Instrument.prototype.play = function (pitch, vel, durSec, rng, over) {
+    var pan = DM.clamp(this.pan + (rng.next() * 2 - 1) * this.spread, -1, 1);
+    if (this.isDrums) {
+      var name = typeof pitch === 'number' ? GM_DRUMS[Math.round(pitch)] : pitch;
+      var rc = KITS[this.kit][name] || DRUMS[name];
+      if (!rc) return null;
+      return new DrumVoice(this.sr, rc, vel, pan, rng, this.tune);
+    }
+    if (typeof pitch !== 'number') throw new Error('Instrument type "' + this.type + '" needs pitches, got "' + pitch + '"');
+    var V = DM.VOICES[this.type], p = this.p;
+    if (over) {
+      p = {};
+      for (var k in this.p) p[k] = this.p[k];
+      for (var k2 in over) p[k2] = over[k2];
+    }
+    return new V(this.sr, p, pitch + this.transpose, vel, durSec, pan, rng);
+  };
+  DM.Instrument = Instrument;
+}),
+(function (DM) {
+  DM.PRESET_REF = {"felt_piano":-28.5,"grand_piano":-27.2,"detuned_piano":-28.5,"rhodes":-26.8,"lofi_keys":-27.5,"glass_keys":-25,"organ":-28.9,"church_organ":-30.2,"poly_synth":-31.1,"toy_piano":-31.8,"harp":-30.4,"nylon_guitar":-31,"jazz_guitar":-33.5,"acoustic_guitar":-30.8,"clean_guitar":-31.9,"banjo":-32.1,"harpsichord":-30.4,"dist_guitar":-22.3,"koto":-30.5,"shamisen":-25.8,"sitar":-22.7,"pizzicato":-36.2,"synth_pluck":-37,"xylophone":-33.9,"marimba":-29.7,"vibraphone":-26.8,"kalimba":-28.4,"steel_drum":-33.4,"glockenspiel":-30.9,"celesta":-31,"music_box":-28.3,"fm_bell":-24.4,"temple_bell":-28.6,"timpani":-23.2,"strings":-28.7,"slow_strings":-30.9,"dark_strings":-29.6,"cello":-28.8,"fiddle":-29.4,"erhu":-27.4,"warm_pad":-32,"glass_pad":-27.6,"supersaw_pad":-33.1,"drone_pad":-28.1,"wind_pad":-28.5,"accordion":-32,"flute":-24.6,"ocarina":-23.7,"pan_flute":-24.5,"tin_whistle":-25.4,"shakuhachi":-24.7,"oboe":-30.3,"clarinet":-25.7,"soft_sax":-30.4,"brass":-28.2,"french_horn":-28.6,"trumpet":-29.2,"tuba":-29,"synth_brass":-31.5,"synth_lead":-26.7,"supersaw_lead":-31.1,"lead_guitar":-21.5,"theremin":-24.8,"sub_bass":-19.5,"synth_bass":-29,"bass808":-16.6,"pluck_bass":-33.1,"upright_bass":-35.3,"bass_guitar":-25.3,"choir_ah":-28.2,"choir_oo":-26,"chip_lead":-26.9,"chip_square":-28.7,"chip_pulse":-26.6,"chip_pluck":-38.1,"chip_pad":-28.6,"chip_triangle":-22.4,"chip_blip":-40.7};
+  DM.KIT_REF = {"acoustic":-33.6,"rock":-32.9,"electronic":-27.7,"chip":-36.5,"lofi":-35.3,"jazz":-35.9,"orchestral":-29,"taiko":-28.4,"folk":-35.2};
+}),
+(function (DM) {
+  'use strict';
+  var K = DM.K = DM.K || {};
+
+  // ---------------------------------------------------------------- meters
+  // bpb = beats per bar, sub = 2 (straight eighths) or 3 (compound: each beat = 3 eighths)
+  K.METERS = {
+    '4/4': { bpb: 4, sub: 2, name: '4/4 - steady (pop, rock, most game music)' },
+    '3/4': { bpb: 3, sub: 2, name: '3/4 - waltz, lullaby' },
+    '6/8': { bpb: 2, sub: 3, name: '6/8 - lilting, rolling (jigs, shanties, ballads)' },
+    '12/8': { bpb: 4, sub: 3, name: '12/8 - slow rolling triplets (blues ballad, epic)' },
+    '2/4': { bpb: 2, sub: 2, name: '2/4 - brisk march, polka' }
+  };
+  K.meter = function (id) { return K.METERS[id] || K.METERS['4/4']; };
+
+  // ---------------------------------------------------------------- scales
+  // notes = scale used to build chords; mel = notes the melody may use (default = notes);
+  // darker / brighter = neighbours for the "Mood" link (walks one step per unit).
+  var MAJ = [0, 2, 4, 5, 7, 9, 11], AEO = [0, 2, 3, 5, 7, 8, 10], MIX = [0, 2, 4, 5, 7, 9, 10], PHR = [0, 1, 3, 5, 7, 8, 10], DOR = [0, 2, 3, 5, 7, 9, 10];
+  K.SCALES = {
+    major: { name: 'Major', mood: 'happy, bright, simple', notes: MAJ, darker: 'mixolydian', brighter: 'lydian' },
+    lydian: { name: 'Lydian', mood: 'dreamy, magical, floating', notes: [0, 2, 4, 6, 7, 9, 11], darker: 'major', brighter: null },
+    mixolydian: { name: 'Mixolydian', mood: 'folky, heroic, sunny but earthy', notes: MIX, darker: 'dorian', brighter: 'major' },
+    dorian: { name: 'Dorian', mood: 'bittersweet, cool, adventurous (Celtic, jazz)', notes: DOR, darker: 'minor', brighter: 'mixolydian' },
+    minor: { name: 'Minor', mood: 'sad, serious, emotional', notes: AEO, darker: 'phrygian', brighter: 'dorian' },
+    harmonic_minor: { name: 'Harmonic minor', mood: 'dramatic, mysterious, classical (castles, villains)', notes: [0, 2, 3, 5, 7, 8, 11], darker: 'phrygian_dominant', brighter: 'minor' },
+    melodic_minor: { name: 'Melodic minor', mood: 'smooth, noir, jazzy', notes: [0, 2, 3, 5, 7, 9, 11], darker: 'minor', brighter: 'dorian' },
+    phrygian: { name: 'Phrygian', mood: 'dark, ancient, Spanish (danger, dungeons)', notes: PHR, darker: 'locrian', brighter: 'minor' },
+    locrian: { name: 'Locrian', mood: 'unstable, very dark (horror)', notes: [0, 1, 3, 5, 6, 8, 10], darker: null, brighter: 'phrygian' },
+    major_pent: { name: 'Major pentatonic', mood: 'open, carefree (East Asian, folk, children)', notes: MAJ, mel: [0, 2, 4, 7, 9], darker: 'minor_pent', brighter: 'major' },
+    minor_pent: { name: 'Minor pentatonic', mood: 'earthy, bluesy, rock', notes: AEO, mel: [0, 3, 5, 7, 10], darker: 'minor', brighter: 'major_pent' },
+    blues: { name: 'Blues', mood: 'gritty, soulful, cool', notes: MIX, mel: [0, 3, 5, 6, 7, 10], blues: true, darker: 'minor_pent', brighter: 'mixolydian' },
+    japanese_in: { name: 'Japanese (In)', mood: 'wistful, traditional Japanese (koto, shrine)', notes: PHR, mel: [0, 1, 5, 7, 8], darker: 'phrygian', brighter: 'yo' },
+    yo: { name: 'Japanese (Yo)', mood: 'bright folk festival, East Asian', notes: MAJ, mel: [0, 2, 5, 7, 9], darker: 'japanese_in', brighter: 'major_pent' },
+    hirajoshi: { name: 'Hirajoshi', mood: 'mysterious, Japanese', notes: AEO, mel: [0, 2, 3, 7, 8], darker: 'japanese_in', brighter: 'minor_pent' },
+    phrygian_dominant: { name: 'Desert (Hijaz)', mood: 'exotic, desert, Middle-Eastern', notes: [0, 1, 4, 5, 7, 8, 10], darker: 'phrygian', brighter: 'harmonic_minor' },
+    double_harmonic: { name: 'Byzantine', mood: 'ornate, ancient temple', notes: [0, 1, 4, 5, 7, 8, 11], darker: 'phrygian_dominant', brighter: 'harmonic_minor' },
+    hungarian_minor: { name: 'Hungarian minor', mood: 'gypsy, sinister, dramatic', notes: [0, 2, 3, 6, 7, 8, 11], darker: 'phrygian_dominant', brighter: 'harmonic_minor' },
+    whole_tone: { name: 'Whole tone', mood: 'dreamlike, unresolved (magic, flashback)', notes: [0, 2, 4, 6, 8, 10], darker: 'diminished', brighter: 'lydian' },
+    diminished: { name: 'Diminished', mood: 'tense, villainous, suspense', notes: [0, 2, 3, 5, 6, 8, 9, 11], darker: 'chromatic', brighter: 'harmonic_minor' },
+    chromatic: { name: 'Chromatic', mood: 'eerie, unstable (horror, madness)', notes: AEO, mel: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], chromatic: true, darker: null, brighter: 'diminished' }
+  };
+  K.scale = function (id) { return K.SCALES[id] || K.SCALES.major; };
+  // walk the darker / brighter chain; steps < 0 = darker
+  K.shiftScale = function (id, steps) {
+    var cur = K.SCALES[id] ? id : 'major';
+    var n = Math.round(steps || 0);
+    while (n !== 0) {
+      var nx = n < 0 ? K.SCALES[cur].darker : K.SCALES[cur].brighter;
+      if (!nx) break;
+      cur = nx; n += n < 0 ? 1 : -1;
+    }
+    return cur;
+  };
+  K.KEYS = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'];
+
+  // ---------------------------------------------------------------- chord progressions
+  // Roman numerals: chord quality comes from the scale, so one progression re-colours with the scale.
+  // Uppercase V in a minor scale = major V (strong cadence). b/# prefix = borrowed chord (major by default).
+  K.PROGRESSIONS = {
+    pop: { name: 'Uplifting', mood: 'hopeful, modern, catchy', chords: 'I V vi IV' },
+    nostalgic: { name: 'Nostalgic', mood: 'warm, classic, sweet', chords: 'I vi IV V' },
+    emotional: { name: 'Emotional', mood: 'heartfelt, bittersweet', chords: 'vi IV I V' },
+    folk: { name: 'Village folk', mood: 'simple, homely, rustic', chords: 'I IV I V' },
+    peaceful: { name: 'Peaceful', mood: 'calm, gentle, open', chords: 'I IV vi IV' },
+    heroic: { name: 'Heroic', mood: 'bold, adventurous, sunny', chords: 'I bVII IV I' },
+    anime: { name: 'Yearning (anime)', mood: 'youthful, dramatic, longing', chords: 'IV V iii vi' },
+    canon: { name: 'Canon', mood: 'graceful, flowing, classical', chords: 'I V vi iii IV I IV V' },
+    classical: { name: 'Classical', mood: 'elegant, old-world', chords: 'I vi ii V' },
+    march: { name: 'March', mood: 'proud, steady, ceremonial', chords: 'I IV V I' },
+    epic: { name: 'Epic', mood: 'grand, sweeping, cinematic', chords: 'i bVI bIII bVII' },
+    battle: { name: 'Battle', mood: 'driving, urgent, determined', chords: 'i bVI bVII i' },
+    andalusian: { name: 'Andalusian', mood: 'passionate, Spanish, fateful', chords: 'i bVII bVI V' },
+    lament: { name: 'Lament', mood: 'sad, tragic', chords: 'i iv bVI V' },
+    somber: { name: 'Somber', mood: 'serious, dark folk', chords: 'i iv i V' },
+    retro: { name: 'Night drive', mood: 'retro, nocturnal, driving', chords: 'i bVII bVI bVII' },
+    dorian_vamp: { name: 'Cool vamp', mood: 'groovy, Celtic, laid-back', chords: 'i IV' },
+    sunny_vamp: { name: 'Sunny vamp', mood: 'easygoing, folky, rock', chords: 'I bVII' },
+    highland: { name: 'Highland', mood: 'misty, Celtic, old', chords: 'i bVII i bVII' },
+    mystery: { name: 'Mysterious', mood: 'dark, ancient, tense', chords: 'i bII' },
+    sinister: { name: 'Sinister', mood: 'creeping, villainous', chords: 'i bII i V' },
+    floating: { name: 'Floating', mood: 'dreamy, magical, weightless', chords: 'I II' },
+    sway: { name: 'Gentle sway', mood: 'peaceful, meditative', chords: 'I IV' },
+    drone: { name: 'Drone (one chord)', mood: 'still, vast, meditative', chords: 'I' },
+    jazz251: { name: 'Jazz ii-V-I', mood: 'smooth, sophisticated', chords: 'ii7 V7 Imaj7 Imaj7' },
+    jazz_turn: { name: 'Jazz turnaround', mood: 'swinging, classic jazz', chords: 'Imaj7 vi7 ii7 V7' },
+    bossa: { name: 'Bossa', mood: 'breezy, warm, beach', chords: 'Imaj7 ii7 iii7 V7' },
+    neosoul: { name: 'Lo-fi', mood: 'mellow, nostalgic, chill', chords: 'IVmaj7 iii7 ii7 Imaj7' },
+    blues: { name: '12-bar blues', mood: 'gritty, soulful, classic', chords: 'I7 I7 I7 I7 IV7 IV7 I7 I7 V7 IV7 I7 V7' }
+  };
+  K.CHORD_SPEEDS = [
+    { v: 2, name: 'Slow (2 bars per chord)' }, { v: 1, name: 'Normal (1 bar per chord)' }, { v: 0.5, name: 'Fast (2 chords per bar)' }
+  ];
+
+  // ---------------------------------------------------------------- melody characters (the tune)
+  // cells[meter] = one-bar rhythms in beats (negative = rest). span = range in semitones,
+  // step = preference for stepwise motion, leap = largest comfortable leap, fill = how weak notes
+  // connect the strong ones (pass = passing tones, nb = neighbour, skip = chord skips, rep = repeats).
+  K.TUNES = {
+    lyrical: {
+      name: 'Singing', desc: 'long, singable notes that move mostly by step - a classic theme', span: 12, step: 0.75, leap: 7, temp: 0.6,
+      fill: { pass: 3, nb: 1.5, skip: 1, rep: 0.5 }, ornament: 0.15,
+      cells: {
+        '4/4': [[2, 1, 1], [1, 1, 2], [1.5, 0.5, 2], [3, 1], [2, 2], [1, 0.5, 0.5, 2], [1, 1, 1, 1], [1.5, 0.5, 1, 1], [-1, 1, 2]],
+        '3/4': [[2, 1], [1, 1, 1], [1.5, 0.5, 1], [3], [1, 2], [0.5, 0.5, 2]],
+        '6/8': [[1, 1], [2 / 3, 1 / 3, 1], [1, 2 / 3, 1 / 3], [2], [1 / 3, 1 / 3, 1 / 3, 1]]
+      }
+    },
+    dance: {
+      name: 'Dancing', desc: 'lively running notes (folk, Celtic, festival)', span: 12, step: 0.8, leap: 5, temp: 0.7,
+      fill: { pass: 3, nb: 2, skip: 1.5, rep: 1 }, ornament: 0.3,
+      cells: {
+        '4/4': [[0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5], [1, 0.5, 0.5, 1, 1], [0.5, 0.5, 1, 0.5, 0.5, 1], [1.5, 0.5, 1.5, 0.5], [0.5, 0.5, 0.5, 0.5, 1, 1], [1, 1, 0.5, 0.5, 1]],
+        '3/4': [[1, 0.5, 0.5, 1], [0.5, 0.5, 0.5, 0.5, 1], [0.5, 0.5, 0.5, 0.5, 0.5, 0.5], [1, 1, 0.5, 0.5]],
+        '6/8': [[1 / 3, 1 / 3, 1 / 3, 1 / 3, 1 / 3, 1 / 3], [2 / 3, 1 / 3, 2 / 3, 1 / 3], [2 / 3, 1 / 3, 1 / 3, 1 / 3, 1 / 3], [1 / 3, 1 / 3, 1 / 3, 2 / 3, 1 / 3], [1, 1 / 3, 1 / 3, 1 / 3]]
+      }
+    },
+    heroic: {
+      name: 'Heroic', desc: 'bold leaps and dotted fanfare rhythms', span: 15, step: 0.45, leap: 9, temp: 0.6,
+      fill: { pass: 1.5, nb: 0.5, skip: 3, rep: 0.5 }, ornament: 0.1,
+      cells: {
+        '4/4': [[1.5, 0.5, 2], [0.75, 0.25, 1, 2], [1, 0.75, 0.25, 2], [0.75, 0.25, 0.75, 0.25, 2], [2, 1, 1], [3, 0.5, 0.5], [1 / 3, 1 / 3, 1 / 3, 3]],
+        '3/4': [[1.5, 0.5, 1], [0.75, 0.25, 2], [2, 0.75, 0.25], [1, 1, 1]],
+        '6/8': [[2 / 3, 1 / 3, 1], [1, 2 / 3, 1 / 3], [0.5, 1 / 6, 1 / 3, 1], [2]]
+      }
+    },
+    gentle: {
+      name: 'Gentle fragments', desc: 'a few soft notes with space around them (open-world piano)', span: 12, step: 0.6, leap: 7, temp: 0.7,
+      fill: { pass: 2, nb: 1, skip: 2, rep: 0.3 }, ornament: 0.05,
+      cells: {
+        '4/4': [[2, -2], [1, 1, -2], [-1, 1, 2], [3, -1], [-2, 1, 1], [1.5, 0.5, -2], [4]],
+        '3/4': [[2, -1], [-1, 2], [1, -2], [3], [1, 1, -1]],
+        '6/8': [[1, -1], [-1, 1], [2], [2 / 3, 1 / 3, -1]]
+      }
+    },
+    jazzy: {
+      name: 'Jazzy', desc: 'syncopated, swinging, with chromatic approach notes', span: 14, step: 0.6, leap: 7, temp: 0.8, chromatic: 0.3,
+      fill: { pass: 2.5, nb: 2, skip: 1.5, rep: 0.3 }, ornament: 0.2,
+      cells: {
+        '4/4': [[-0.5, 1, 0.5, 1, 1], [1.5, 1, 1.5], [0.5, 1, 0.5, 2], [1, 0.5, 1, 1.5], [-1, 0.5, 0.5, 0.5, 1.5], [0.5, 0.5, 0.5, 0.5, 2]],
+        '3/4': [[-0.5, 1, 1.5], [1.5, 1.5], [0.5, 1, 1.5], [1, 0.5, 1.5]],
+        '6/8': [[2 / 3, 1 / 3, 1], [1 / 3, 2 / 3, 1]]
+      }
+    },
+    mysterious: {
+      name: 'Mysterious', desc: 'slow, wandering, a little chromatic', span: 10, step: 0.7, leap: 8, temp: 0.8, chromatic: 0.2,
+      fill: { pass: 2, nb: 2.5, skip: 1, rep: 0.2 }, ornament: 0.1,
+      cells: {
+        '4/4': [[3, 1], [2, 2], [4], [1, 3], [-1, 3], [2, 1, 1]],
+        '3/4': [[3], [2, 1], [1, 2]],
+        '6/8': [[2], [1, 1], [-1, 1]]
+      }
+    },
+    playful: {
+      name: 'Playful', desc: 'bouncy short notes and skips (cute, comedic)', span: 12, step: 0.5, leap: 7, temp: 0.9,
+      fill: { pass: 1.5, nb: 2, skip: 2.5, rep: 1 }, ornament: 0.25,
+      cells: {
+        '4/4': [[0.5, -0.5, 0.5, -0.5, 1, 1], [0.5, 0.5, 1, -1, 1], [1, 0.5, 0.5, 1, -1], [0.5, 0.5, 0.5, -0.5, 2], [0.5, 0.5, 0.5, 0.5, 1, -1]],
+        '3/4': [[0.5, -0.5, 1, 1], [1, 0.5, 0.5, -1], [0.5, 0.5, 0.5, 0.5, 1]],
+        '6/8': [[1 / 3, -1 / 3, 1 / 3, 1 / 3, -1 / 3, 1 / 3], [2 / 3, 1 / 3, 2 / 3, 1 / 3]]
+      }
+    },
+    riff: {
+      name: 'Riff', desc: 'a short catchy figure repeated and fitted to each chord (rock, chiptune, battle)', span: 10, step: 0.6, leap: 7, temp: 0.6, riff: true,
+      fill: { pass: 2, nb: 1.5, skip: 2, rep: 1.5 }, ornament: 0.05,
+      cells: {
+        '4/4': [[0.5, 0.5, 1, 0.5, 0.5, 1], [0.75, 0.75, 0.5, 1, 1], [0.5, 1, 0.5, 1, 1], [0.5, 0.5, 0.5, 0.5, 1, 1]],
+        '3/4': [[0.5, 0.5, 1, 1], [1, 0.5, 0.5, 1]],
+        '6/8': [[1 / 3, 1 / 3, 1 / 3, 2 / 3, 1 / 3], [2 / 3, 1 / 3, 2 / 3, 1 / 3]]
+      }
+    },
+    chant: {
+      name: 'Chant', desc: 'few notes, stepwise, ritual or medieval', span: 7, step: 0.95, leap: 4, temp: 0.5,
+      fill: { pass: 3, nb: 2, skip: 0.3, rep: 2 }, ornament: 0.05,
+      cells: {
+        '4/4': [[1, 1, 1, 1], [2, 1, 1], [1, 1, 2], [2, 2]],
+        '3/4': [[1, 1, 1], [2, 1]],
+        '6/8': [[1, 1], [2 / 3, 1 / 3, 1]]
+      }
+    },
+    ambient: {
+      name: 'Long tones', desc: 'very long floating notes', span: 12, step: 0.6, leap: 7, temp: 0.7,
+      fill: { pass: 1, nb: 1, skip: 2, rep: 0.2 }, ornament: 0,
+      cells: { '4/4': [[4], [-2, 2], [2, 2], [3, -1]], '3/4': [[3], [-1, 2]], '6/8': [[2], [-1, 1]] }
+    }
+  };
+
+  // ---------------------------------------------------------------- sounds: playable range + behaviour
+  // [lowest, highest] as note names, sus = can hold a note (else it decays), mono = one note at a time is idiomatic
+  var S = function (lo, hi, sus, extra) { var o = { lo: lo, hi: hi, sus: !!sus }; for (var k in extra) o[k] = extra[k]; return o; };
+  var RAW = {
+    felt_piano: S('A0', 'C8', 0), grand_piano: S('A0', 'C8', 0), detuned_piano: S('A0', 'C8', 0), rhodes: S('E1', 'G7', 0),
+    lofi_keys: S('E1', 'G7', 0), glass_keys: S('C2', 'C7', 0), organ: S('C2', 'C7', 1), church_organ: S('C1', 'C7', 1),
+    poly_synth: S('C2', 'C7', 1), toy_piano: S('F4', 'C7', 0), harp: S('C1', 'G7', 0), nylon_guitar: S('E2', 'B5', 0, { guitar: 1 }),
+    jazz_guitar: S('E2', 'D6', 0, { guitar: 1 }), acoustic_guitar: S('E2', 'C6', 0, { guitar: 1 }), clean_guitar: S('E2', 'D6', 0, { guitar: 1 }),
+    banjo: S('C3', 'D6', 0, { guitar: 1 }), harpsichord: S('F1', 'F6', 0), dist_guitar: S('E2', 'D6', 0, { guitar: 1 }),
+    koto: S('D3', 'D6', 0), shamisen: S('B2', 'B5', 0), sitar: S('C3', 'G5', 0), pizzicato: S('C2', 'G6', 0), synth_pluck: S('C2', 'C7', 0),
+    xylophone: S('F4', 'C8', 0, { mallet: 1 }), marimba: S('C2', 'C7', 0, { mallet: 1 }), vibraphone: S('F3', 'F6', 0, { mallet: 1 }),
+    kalimba: S('C4', 'E6', 0), steel_drum: S('D4', 'F#6', 0, { mallet: 1 }), glockenspiel: S('G5', 'C8', 0, { mallet: 1 }), celesta: S('C4', 'C8', 0),
+    music_box: S('C4', 'C7', 0), fm_bell: S('C4', 'C7', 0), temple_bell: S('C2', 'C5', 0), timpani: S('D2', 'C4', 0, { mallet: 1 }),
+    strings: S('C2', 'E7', 1), slow_strings: S('C2', 'E7', 1), dark_strings: S('C2', 'E6', 1), cello: S('C2', 'E5', 1, { mono: 1 }),
+    fiddle: S('G3', 'E7', 1, { mono: 1 }), erhu: S('D4', 'A6', 1, { mono: 1 }), warm_pad: S('C2', 'C7', 1), glass_pad: S('C3', 'C7', 1),
+    supersaw_pad: S('C2', 'C7', 1), drone_pad: S('C1', 'C6', 1), wind_pad: S('C2', 'C6', 1), accordion: S('F3', 'A6', 1),
+    flute: S('C4', 'C7', 1, { mono: 1, breath: 1 }), ocarina: S('A4', 'F6', 1, { mono: 1, breath: 1 }), pan_flute: S('D4', 'C7', 1, { mono: 1, breath: 1 }),
+    tin_whistle: S('D5', 'D7', 1, { mono: 1, breath: 1 }), shakuhachi: S('D4', 'D6', 1, { mono: 1, breath: 1 }), oboe: S('Bb3', 'A6', 1, { mono: 1, breath: 1 }),
+    clarinet: S('D3', 'Bb6', 1, { mono: 1, breath: 1 }), soft_sax: S('Db3', 'Ab5', 1, { mono: 1, breath: 1 }), brass: S('E2', 'Bb5', 1),
+    french_horn: S('B1', 'F5', 1, { mono: 1, breath: 1 }), trumpet: S('F#3', 'D6', 1, { mono: 1, breath: 1 }), tuba: S('D1', 'F4', 1, { mono: 1, breath: 1 }),
+    synth_brass: S('C2', 'C7', 1), synth_lead: S('C3', 'C7', 1, { mono: 1 }), supersaw_lead: S('C3', 'C7', 1, { mono: 1 }),
+    lead_guitar: S('E3', 'E6', 1, { mono: 1 }), theremin: S('C3', 'C7', 1, { mono: 1 }), sub_bass: S('C1', 'C4', 1, { bass: 1 }),
+    synth_bass: S('C1', 'C4', 1, { bass: 1 }), bass808: S('C1', 'E3', 0, { bass: 1 }), pluck_bass: S('E1', 'C4', 0, { bass: 1 }),
+    upright_bass: S('E1', 'C4', 0, { bass: 1 }), bass_guitar: S('E1', 'G4', 0, { bass: 1 }), choir_ah: S('C3', 'G5', 1), choir_oo: S('A2', 'G5', 1),
+    chip_lead: S('C3', 'C7', 1, { mono: 1 }), chip_square: S('C2', 'C7', 1), chip_pulse: S('C3', 'C7', 1), chip_pluck: S('C2', 'C7', 0),
+    chip_pad: S('C2', 'C7', 1), chip_triangle: S('C1', 'C5', 1, { bass: 1 }), chip_blip: S('C4', 'C8', 0), drums: S('C1', 'C8', 0, { drums: 1 })
+  };
+  K.SOUND_META = {};
+  Object.keys(RAW).forEach(function (k) {
+    var r = RAW[k], m = {};
+    for (var x in r) m[x] = r[x];
+    m.lo = DM.noteToMidi(r.lo); m.hi = DM.noteToMidi(r.hi);
+    K.SOUND_META[k] = m;
+  });
+  K.soundMeta = function (id) {
+    return K.SOUND_META[id] || { lo: 36, hi: 96, sus: true };
+  };
+  var NAME_FIX = { bass808: '808 bass', fm_bell: 'FM bell', lofi_keys: 'Lo-fi keys', chip_lead: '8-bit lead', chip_square: '8-bit square', chip_pulse: '8-bit pulse',
+    chip_pluck: '8-bit pluck', chip_pad: '8-bit pad', chip_triangle: '8-bit triangle bass', chip_blip: '8-bit blip', poly_synth: 'Poly synth', dist_guitar: 'Distorted guitar',
+    soft_sax: 'Soft saxophone', choir_ah: 'Choir "ah"', choir_oo: 'Choir "oo"', drums: 'Drum kit' };
+  K.soundName = function (id) {
+    if (NAME_FIX[id]) return NAME_FIX[id];
+    var s = String(id).replace(/_/g, ' ');
+    return s.charAt(0).toUpperCase() + s.slice(1);
+  };
+  K.KIT_INFO = {
+    acoustic: 'Acoustic kit', rock: 'Rock kit (big)', electronic: 'Electronic kit', chip: '8-bit kit', lofi: 'Lo-fi kit (dusty)',
+    jazz: 'Jazz kit (soft, ride)', orchestral: 'Orchestral percussion', taiko: 'Taiko ensemble', folk: 'Folk percussion (stomps, frame drum)'
+  };
+
+  // register centre per role before the instrument's range is applied
+  K.ROLE_CENTER = { melody: 74, counter: 62, chords: 62, arp: 70, bass: 38, pad: 62, accent: 50 };
+
+  // ---------------------------------------------------------------- roles
+  K.ROLES = {
+    melody: { name: 'Melody', desc: 'plays the tune' },
+    counter: { name: 'Counter-melody', desc: 'answers or harmonises the tune' },
+    chords: { name: 'Chords', desc: 'plays the harmony in a rhythm (strums, comping, block chords)' },
+    arp: { name: 'Arpeggio', desc: 'ripples through the chord notes' },
+    bass: { name: 'Bass', desc: 'low notes that anchor the harmony' },
+    pad: { name: 'Pad', desc: 'soft held background chords or drones' },
+    drums: { name: 'Drums', desc: 'the main beat (groove + fills)' },
+    perc: { name: 'Percussion', desc: 'extra rhythm colour (shaker, tambourine, hand drums)' },
+    accent: { name: 'Hits & rolls', desc: 'big moments: hits on phrase starts, rolls, bells' }
+  };
+  K.ROLE_ORDER = ['melody', 'counter', 'chords', 'arp', 'bass', 'pad', 'drums', 'perc', 'accent'];
+
+  // ---------------------------------------------------------------- cues (short musical moments fired by events)
+  K.CUES = {
+    rise: { name: 'Discovery rise', desc: 'a quick sparkling run upward', sound: 'celesta' },
+    fanfare: { name: 'Victory fanfare', desc: 'a short brass fanfare that lands on the home chord', sound: 'brass' },
+    hit: { name: 'Danger hit', desc: 'a low boom with a dark chord stab', sound: 'brass' },
+    chime: { name: 'Chime', desc: 'two soft bell notes (doors, items, menus)', sound: 'glockenspiel' },
+    fall: { name: 'Fall', desc: 'descending notes (failure, game over)', sound: 'strings' },
+    swell: { name: 'Swell', desc: 'a rising chord swell (a moment of awe)', sound: 'choir_ah' },
+    roll: { name: 'Drum roll', desc: 'a snare roll building into a crash', sound: 'drums' }
+  };
+}),
+(function (DM) {
+  'use strict';
+  var K = DM.K = DM.K || {};
+  var T = {};
+  function def(id, o) { o.id = id; T[id] = o; }
+
+  // ======================= CHORDS =======================
+  def('hold', { roles: ['chords', 'pad'], kind: 'hold', voicing: 'open', notes: 4, name: 'Held chords',
+    desc: 'long chords that change with the harmony; piano, guitar and mallets re-strike or roll because they cannot hold' });
+  def('block', { roles: ['chords'], voicing: 'piano', notes: 4, name: 'Block chords', desc: 'full chords struck together on the beat',
+    pat: { '4/4': ['C-------C-------', 'C---C---C---C---', 'C-C-C-C-C-C-C-C-'], '3/4': ['C-----------', 'C---C---C---', 'C-C-C-C-C-C-'], '6/8': ['C-----', 'C--C--', 'C-CC-C'] } });
+  def('pulse', { roles: ['chords'], voicing: 'close', notes: 3, len: 0.8, name: 'Pulsing eighths', desc: 'repeated eighth-note chords that push the song forward (pop, rock, synthwave)',
+    pat: { '4/4': ['C-C-C-C-', 'CCCCCCCC', 'CCCCCCCCCCCCCCCC'], '3/4': ['C-C-C-', 'CCCCCC', 'CCCCCCCCCCCC'], '6/8': ['C--C--', 'CCCCCC', 'CCCCCCCCCCCC'] } });
+  def('ballad', { roles: ['chords', 'arp'], voicing: 'broken', pedal: true, name: 'Ballad arpeggio', desc: 'a pianist\'s broken chord: bass note, then the chord rolls up and rings with the pedal down',
+    pat: { '4/4': ['1-2-3-4-', '12345432', '1234565432345654'], '3/4': ['1-2-3-', '123454', '123456543234'], '6/8': ['1-23-4', '123432', '123456543234'] } });
+  def('alberti', { roles: ['chords', 'arp'], voicing: 'closeLow', notes: 3, name: 'Alberti bass', desc: 'the classical low-high-middle-high figure (Mozart, minuets, castles)',
+    pat: { '4/4': ['1-3-2-3-', '13231323', '1323132313231323'], '3/4': ['1-3-2-', '132323', '132313231323'], '6/8': ['1-3-2-', '132323', '132313231323'] } });
+  def('stride', { roles: ['chords'], voicing: 'piano', len: 0.6, name: 'Oom-pah', desc: 'bass note on the strong beats, short chord on the off-beats (ragtime, march, polka, waltz)',
+    pat: { '4/4': ['B.H.F.H.', 'B.H.F.H.', 'B.HHF.HH'], '3/4': ['B.H.H.', 'B.H.H.', 'B.HHHH'], '6/8': ['B.HF.H', 'B.HF.H', 'BHHFHH'] } });
+  def('comp', { roles: ['chords'], voicing: 'shell', notes: 4, len: 0.55, name: 'Jazz comping', desc: 'short syncopated chords that change every bar, like a jazz pianist (Charleston rhythm)',
+    pat: {
+      '4/4': ['C.....C.........',
+        ['C.....C.........', '..C.....C.......', 'C.........C.....', '......C.....C...', '..C...C.....C...', 'C.......C.....C.'],
+        ['C.C...C...C.....', '..C.C...C..C....', 'C..C..C.....C.C.', '.C..C...C.C.....']],
+      '3/4': ['C.....', ['C..C..', '.C..C.', 'C...C.'], ['C.C.C.', '.CC..C', 'C..CC.']],
+      '6/8': ['C.....', ['C..C..', '.C..C.'], ['C.CC.C', 'C..CC.']]
+    } });
+  def('skank', { roles: ['chords'], voicing: 'closeHigh', notes: 3, len: 0.35, name: 'Off-beat skank', desc: 'short chops on the off-beats (reggae, ska, island)',
+    pat: { '4/4': ['....C.......C...', '..C...C...C...C.', '..CC..CC..CC..CC'], '3/4': ['....C...C...', '..C...C...C.', '..CC..CC..CC'], '6/8': ['...C..', '.CC.CC', '.CC.CC'] } });
+  def('strum', { roles: ['chords'], voicing: 'guitar', notes: 6, strum: 14, name: 'Folk strum', desc: 'down, down-up, up-down-up guitar strumming (folk, pop, campfire)',
+    pat: { '4/4': ['D-..D-..', 'D.DU.UDU', 'DUDUDUDU'], '3/4': ['D.D.D.', 'D.DUDU', 'DUDUDU'], '6/8': ['D..D..', 'D.UD.U', 'DUDDUD'] } });
+  def('strum8', { roles: ['chords'], voicing: 'guitar', notes: 6, strum: 9, len: 0.8, name: 'Driving strum', desc: 'steady down-strokes on every eighth (rock, pop-punk, anthems)',
+    pat: { '4/4': ['D-D-D-D-', 'DDDDDDDD', 'DUDUDUDUDUDUDUDU'], '3/4': ['D-D-D-', 'DDDDDD', 'DUDUDUDUDUDU'], '6/8': ['D--D--', 'DDDDDD', 'DUDDUD'] } });
+  def('fingerpick', { roles: ['chords', 'arp'], voicing: 'fingerpick', pedal: true, name: 'Fingerpicking', desc: 'the thumb alternates bass notes while the fingers pick the chord (Travis style)',
+    pat: { '4/4': ['1.4.2.5.', '14251426', '1425142614251436'], '3/4': ['1.4.5.', '142545', '142534253425'], '6/8': ['1..2..', '145245', '145645245645'] } });
+  def('power', { roles: ['chords'], voicing: 'power', notes: 3, len: 0.55, name: 'Power chords', desc: 'root and fifth only: palm-muted eighths or big hits (rock, metal, battle)',
+    pat: { '4/4': ['P-------P-------', 'PPPPPPPP', 'P.PPP.PPP.PPP.PP'], '3/4': ['P-----------', 'PPPPPP', 'P.PPP.PPP.PP'], '6/8': ['P-----', 'PPPPPP', 'PPPPPP'] } });
+  def('bossa', { roles: ['chords'], voicing: 'guitar4', notes: 4, len: 0.6, fallback: 'fingerpick', name: 'Bossa nova', desc: 'the thumb plays bass on 1 and 3 while the fingers play syncopated chords (Brazil)',
+    pat: { '4/4': ['C.......F.......', 'C.....H.F...H...|B...H...F.H.....', 'C.....H.F...H.H.|B..HH...F.H...H.'] } });
+  def('tremolo', { roles: ['chords', 'pad'], kind: 'hold', voicing: 'open', notes: 4, over: { tremRate: 11, tremDepth: 0.85 }, name: 'Tremolo',
+    desc: 'fast trembling held chords - the classic suspense string sound' });
+  def('swell', { roles: ['chords', 'pad'], kind: 'hold', voicing: 'open', notes: 4, swell: true, name: 'Swells', desc: 'each chord fades in and blooms (strings, choir, brass)' });
+  def('stabs', { roles: ['chords', 'accent'], voicing: 'close', notes: 4, len: 0.3, name: 'Stabs', desc: 'short punchy chord hits on syncopated beats (brass section, synth)',
+    pat: {
+      '4/4': ['C...............', ['C.....C.........', 'C.........C.....', '......C.....C...'], ['C..C..C...C.C...', 'C.C...C..C..C...']],
+      '3/4': ['C...........', ['C.....C.....', 'C...C.......'], ['C..C..C...C.']], '6/8': ['C.....', ['C..C..'], ['C.CC.C']]
+    } });
+  def('ostinato', { roles: ['chords', 'arp'], voicing: 'ostinato', len: 0.5, name: 'Driving ostinato', desc: 'relentless repeated short notes on the chord root (epic strings, action, chase)',
+    pat: { '4/4': ['12131213', '1112111311121113', '1212131312121313'], '3/4': ['121312', '111211131112', '121213131212'], '6/8': ['112113', '111211131112', '121213121213'] } });
+  def('gate', { roles: ['pad', 'chords'], voicing: 'open', notes: 4, len: 0.5, name: 'Gated pulse', desc: 'a held chord chopped into fast pulses (trance, synthwave)',
+    pat: { '4/4': ['C-C-C-C-C-C-C-C-', 'CCCCCCCCCCCCCCCC', 'CCCCCCCCCCCCCCCC'], '3/4': ['C-C-C-C-C-C-', 'CCCCCCCCCCCC', 'CCCCCCCCCCCC'], '6/8': ['C-C-C-C-C-C-', 'CCCCCCCCCCCC', 'CCCCCCCCCCCC'] } });
+
+  // ======================= ARPEGGIOS =======================
+  def('arp_up', { roles: ['arp'], voicing: 'ladder', len: 0.9, name: 'Rising arpeggio', desc: 'chord notes one after another going up',
+    pat: { '4/4': ['1-2-3-4-', '12341234', '1234234534564567'], '3/4': ['1-2-3-', '123123', '123423453456'], '6/8': ['1-2-3-', '123234', '123423453456'] } });
+  def('arp_down', { roles: ['arp'], voicing: 'ladder', len: 0.9, name: 'Falling arpeggio', desc: 'chord notes going down',
+    pat: { '4/4': ['4-3-2-1-', '43214321', '7654654354324321'], '3/4': ['3-2-1-', '321321', '654354324321'], '6/8': ['3-2-1-', '432321', '654354324321'] } });
+  def('arp_updown', { roles: ['arp'], voicing: 'ladder', len: 0.9, name: 'Up-and-down arpeggio', desc: 'chord notes rippling up and back down',
+    pat: { '4/4': ['1-3-5-3-', '12345432', '1234565432345654'], '3/4': ['1-3-5-', '123432', '123456543234'], '6/8': ['1-3-5-', '123432', '123456543234'] } });
+  def('arp_random', { roles: ['arp'], voicing: 'ladder', len: 0.8, name: 'Random chord notes', desc: 'chord notes in a shifting random order (bubbly, magical)',
+    pat: { '4/4': ['r-r-r-r-', 'rrrrrrrr', 'rrrrrrrrrrrrrrrr'], '3/4': ['r-r-r-', 'rrrrrr', 'rrrrrrrrrrrr'], '6/8': ['r--r--', 'rrrrrr', 'rrrrrrrrrrrr'] } });
+  def('broken3', { roles: ['arp', 'chords'], voicing: 'ladder', pedal: true, name: 'Broken thirds', desc: 'a gentle zig-zag up the chord (music box, celesta, harp)',
+    pat: { '4/4': ['1-3-2-4-', '13243546', '1324354657463524'], '3/4': ['1-3-2-', '132435', '132435465746'], '6/8': ['1-32-4', '132435', '132435465746'] } });
+  def('harp_roll', { roles: ['arp', 'chords'], kind: 'roll', pedal: true, name: 'Harp rolls', desc: 'each chord rolls quickly upward over two octaves and rings' });
+  def('sparkle', { roles: ['arp', 'counter', 'accent'], kind: 'sparkle', name: 'Sparkles', desc: 'a few random high chord notes here and there (bells, celesta, chimes)' });
+
+  // ======================= BASS =======================
+  def('bass_hold', { roles: ['bass'], name: 'Long notes', desc: 'one long root note per chord',
+    pat: { '4/4': ['R---------------', 'R---------------', 'R-------R-------'], '3/4': ['R-----------', 'R-----------', 'R-------R---'], '6/8': ['R-----', 'R-----', 'R--R--'] } });
+  def('root_beats', { roles: ['bass'], name: 'Root on the beat', desc: 'steady root notes (pop, rock)',
+    pat: { '4/4': ['R-------R-------', 'R---R---R---R---', 'R-R-R-R-R-R-R-R-'], '3/4': ['R-----------', 'R---R---R---', 'R-R-R-R-R-R-'], '6/8': ['R-----', 'R--R--', 'R-RR-R'] } });
+  def('root_fifth', { roles: ['bass'], name: 'Root and fifth', desc: 'alternating root and fifth (country, folk, march)',
+    pat: { '4/4': ['R-------5-------', 'R---5---R---5---', 'R---5-5-R---5-A-'], '3/4': ['R-----------', 'R---5---5---', 'R---5-5-8---'], '6/8': ['R-----', 'R--5--', 'R-55-A'] } });
+  def('pump', { roles: ['bass'], len: 0.75, name: 'Pumping eighths', desc: 'driving repeated eighth notes (rock, synthwave, chase)',
+    pat: { '4/4': ['R-R-R-R-', 'RRRRRRRR', 'RRRRRRRRRRRRRRRR'], '3/4': ['R-R-R-', 'RRRRRR', 'RRRRRRRRRRRR'], '6/8': ['R--R--', 'RRRRRR', 'RRRRRRRRRRRR'] } });
+  def('octave', { roles: ['bass'], len: 0.7, name: 'Octave jumps', desc: 'bouncing between low and high root (disco, dance, chiptune)',
+    pat: { '4/4': ['R-8-R-8-', 'R8R8R8R8', 'R8R8R8R8R8R8R8R8'], '3/4': ['R-8-8-', 'R8R8R8', 'R8R8R8R8R8R8'], '6/8': ['R--8--', 'R88R88', 'R8R8R8R8R8R8'] } });
+  def('walking', { roles: ['bass'], len: 0.95, name: 'Walking bass', desc: 'a smooth line of steady notes that walks to the next chord (jazz, swing, blues)',
+    pat: { '4/4': ['R-------5-------', 'R---W---W---A---', 'R---W---W-W-A---'], '3/4': ['R-----5-----', 'R---W---A---', 'R---W-W-A---'], '6/8': ['R--5--', 'R--A--', 'R-WW-A'] } });
+  def('funk', { roles: ['bass'], len: 0.5, name: 'Funky syncopation', desc: 'popping sixteenth-note bass with ghost notes (funk, disco, groove)',
+    pat: {
+      '4/4': ['R.......R..R....', ['R..R..8.R.gR..5.', 'R.gR..R.8..R.5.R'], ['R.gRg.8gR.gR.g5R', 'R.g8.gR.R.g8g.5R']],
+      '3/4': ['R.....R.....', ['R..R..8.R.g.'], ['R.gRg.8gR.gR']], '6/8': ['R..R..', ['R.gR.8'], ['RgR8gR']]
+    } });
+  def('reggae', { roles: ['bass'], len: 0.85, fallback: 'root_fifth', name: 'Reggae bass', desc: 'deep, melodic and leaving space (reggae, dub)',
+    pat: { '4/4': ['R-----....5-----', 'R--.R.5.8---5...', 'R-.RR.5.8-.85.3.'] } });
+  def('bossa_bass', { roles: ['bass'], fallback: 'root_fifth', name: 'Bossa bass', desc: 'root and fifth with the bossa nova pickup rhythm',
+    pat: { '4/4': ['R-------5-------', 'R-----R-5-----5-', 'R-----R-5-----A-'] } });
+  def('tuba', { roles: ['bass'], len: 0.5, name: 'Oom-pah bass', desc: 'short root on beat 1, fifth on beat 3 (march, polka, circus)',
+    pat: { '4/4': ['R.......', 'R...5...', 'R...5.A.'], '3/4': ['R.....', 'R.....', 'R...5.'], '6/8': ['R..5..', 'R..5..', 'R.55.A'] } });
+  def('pedal', { roles: ['bass', 'pad'], name: 'Pedal note', desc: 'one held home note under every chord - builds tension (drone, suspense)',
+    pat: { '4/4': ['T---------------', 'T---------------', 'T-------T-------'], '3/4': ['T-----------'], '6/8': ['T-----'] } });
+  def('b808', { roles: ['bass'], slide: true, fallback: 'root_beats', name: '808 slides', desc: 'long booming notes that slide between pitches (trap, hip-hop)',
+    pat: { '4/4': ['R-------........', 'R-----R---..R-..', 'R-----R-R-..R-R.'] } });
+  def('gallop', { roles: ['bass'], len: 0.6, fallback: 'pump', name: 'Gallop', desc: 'da-da-dum gallop rhythm (metal, action, chase)',
+    pat: { '4/4': ['R.RRR.RRR.RRR.RR', 'R.RRR.RRR.RRR.RR', 'RRRRRRRRRRRRRRRR'] } });
+  def('synth_arp_bass', { roles: ['bass'], len: 0.6, name: 'Synth arp bass', desc: 'root-octave-fifth sequence (synthwave, chiptune)',
+    pat: { '4/4': ['R-8-5-8-', 'R8R5R8R5', 'R8R5R858R8R5R858'], '3/4': ['R-8-5-', 'R8R5R8', 'R8R5R858R8R5'], '6/8': ['R85R85', 'R85R85', 'R8585858R858'] } });
+
+  // ======================= PADS =======================
+  def('drone', { roles: ['pad', 'bass'], kind: 'drone', name: 'Drone', desc: 'the home note and its fifth held under everything (ambient, ancient, bagpipes)' });
+  def('shimmer', { roles: ['pad'], kind: 'hold', voicing: 'high', notes: 3, name: 'High shimmer', desc: 'soft chord tones held high above the band' });
+
+  // ======================= MELODY / COUNTER (play the tune) =======================
+  def('lead', { roles: ['melody'], kind: 'theme', mode: 'lead', name: 'Lead', desc: 'plays the tune as written' });
+  def('fragments', { roles: ['melody'], kind: 'theme', mode: 'sparse', name: 'Fragments', desc: 'only pieces of the tune with space between (open-world exploration)' });
+  def('ornate', { roles: ['melody'], kind: 'theme', mode: 'ornate', name: 'Ornamented', desc: 'the tune with grace notes, turns and slides (Celtic, folk, Eastern)' });
+  def('octaves', { roles: ['melody'], kind: 'theme', mode: 'octaves', name: 'Octave doubled', desc: 'the tune in two octaves at once - big and bold (epic, rock)' });
+  def('answer', { roles: ['counter'], kind: 'theme', mode: 'answer', name: 'Call and response', desc: 'fills the gaps when the tune rests or holds a long note' });
+  def('third_below', { roles: ['counter'], kind: 'theme', mode: 'third', name: 'Harmony (3rd below)', desc: 'follows the tune a third lower, like a second singer' });
+  def('sixth_below', { roles: ['counter'], kind: 'theme', mode: 'sixth', name: 'Harmony (6th below)', desc: 'follows the tune a sixth lower (sweet, wide)' });
+  def('counterline', { roles: ['counter'], kind: 'theme', mode: 'line', name: 'Slow counter-line', desc: 'a smooth line of long notes moving against the tune (cello, horn)' });
+  def('double_low', { roles: ['counter'], kind: 'theme', mode: 'lowoct', name: 'Doubling (octave below)', desc: 'plays the tune an octave lower for weight' });
+  def('unison', { roles: ['counter'], kind: 'theme', mode: 'unison', name: 'Doubling (unison)', desc: 'plays the tune together with the lead' });
+
+  // ======================= HITS & ROLLS =======================
+  def('ac_phrase', { roles: ['accent'], kind: 'accent', mode: 'phrase', name: 'Phrase hits', desc: 'one big hit at the start of every phrase' });
+  def('ac_chord', { roles: ['accent'], kind: 'accent', mode: 'chord', name: 'Chord-change hits', desc: 'a hit whenever the chord changes' });
+  def('ac_roll', { roles: ['accent'], kind: 'accent', mode: 'roll', name: 'Rolls into phrases', desc: 'a crescendo roll at the end of each phrase, landing on a hit (timpani, snare)' });
+  def('ac_bell', { roles: ['accent'], kind: 'accent', mode: 'bell', name: 'Bell on phrases', desc: 'a bell tone marking each new phrase' });
+
+  // ======================= DRUM GROOVES =======================
+  // fills: which drums the fill uses (S snare, T1 T2 T3 high/mid/low tom, K kick)
+  var FILL_KIT = { S: 'snare', T1: 'tomhi', T2: 'tom', T3: 'tomlo', K: 'kick' };
+  function groove(id, name, desc, pat, extra) {
+    var o = { roles: ['drums'], kind: 'groove', name: name, desc: desc, pat: pat, fillMap: FILL_KIT };
+    for (var k in extra) o[k] = extra[k];
+    def(id, o);
+  }
+  groove('dr_pop', 'Pop / rock beat', 'kick on 1 and 3, snare on 2 and 4, hi-hat eighths', {
+    '4/4': [{ kick: 'x.......x.......', snare: '....x.......x...', hat: 'x...x...x...x...' },
+      { kick: 'x.......x.x.....', snare: '....x.......x...', hat: 'x.x.x.x.x.x.x.x.' },
+      { kick: 'x.....x.x.x.....', snare: '....x..g....x..g', hat: 'xxxxxxxxxxxxxxxx' }],
+    '3/4': [{ kick: 'x...........', snare: '........x...', hat: 'x...x...x...' },
+      { kick: 'x.....x.....', snare: '....x...x...', hat: 'x.x.x.x.x.x.' },
+      { kick: 'x.....x.x...', snare: '....x...x..g', hat: 'xxxxxxxxxxxx' }],
+    '6/8': [{ kick: 'x...........', snare: '......x.....', hat: 'x.x.x.x.x.x.' },
+      { kick: 'x...x.......', snare: '......x.....', hat: 'x.x.x.x.x.x.' },
+      { kick: 'x...x.x.....', snare: '......x...g.', hat: 'xxxxxxxxxxxx' }]
+  });
+  groove('dr_rock', 'Big rock', 'heavy backbeat with open hi-hat and crashes', {
+    '4/4': [{ kick: 'x.......x.......', snare: '....X.......X...', hat: 'x.x.x.x.x.x.x.x.' },
+      { kick: 'x.....x.x.......', snare: '....X.......X...', hat: 'x.x.x.x.x.x.x.o.' },
+      { kick: 'x.x...x.x.x...x.', snare: '....X.......X...', hat: 'x.x.x.x.x.x.x.o.', ride: 'x...x...x...x...' }]
+  }, { fallback: 'dr_pop', crashy: true });
+  groove('dr_halftime', 'Half-time', 'snare only on beat 3 - heavy, slow, huge', {
+    '4/4': [{ kick: 'x...............', snare: '........X.......', hat: 'x...x...x...x...' },
+      { kick: 'x......x..x.....', snare: '........X.......', hat: 'x.x.x.x.x.x.x.x.' },
+      { kick: 'x.x....x..x...x.', snare: '........X.....g.', hat: 'xxxxxxxxxxxxxxxx' }]
+  }, { fallback: 'dr_pop' });
+  groove('dr_four', 'Four on the floor', 'kick on every beat, open hats on the off-beats (dance, disco, house)', {
+    '4/4': [{ kick: 'x...x...x...x...', hat: '..x...x...x...x.' },
+      { kick: 'x...x...x...x...', clap: '....x.......x...', ohat: '..x...x...x...x.' },
+      { kick: 'x...x...x...x...', clap: '....x.......x...', ohat: '..x...x...x...x.', hat: 'xx.xxx.xxx.xxx.x' }]
+  }, { fallback: 'dr_pop' });
+  groove('dr_hiphop', 'Boom bap', 'laid-back hip-hop beat (best with a little swing)', {
+    '4/4': [{ kick: 'x.........x.....', snare: '....x.......x...', hat: 'x...x...x...x...' },
+      { kick: 'x.....x...x.....', snare: '....x.......x...', hat: 'x.x.x.x.x.x.x.x.' },
+      { kick: 'x.....x.x.x...x.', snare: '....x.......x..g', hat: 'x.xxx.x.x.xxx.x.' }]
+  }, { fallback: 'dr_pop' });
+  groove('dr_trap', 'Trap', 'half-time clap with rapid hi-hat rolls', {
+    '4/4': [{ kick: 'x.........x.....', clap: '........x.......', hat: 'x.x.x.x.x.x.x.x.' },
+      { kick: 'x......x..x.....', clap: '........x.......', hat: 'xxxxxxxxxxxxxxxx' },
+      { kick: 'x......x..x...x.', clap: '........x.......', hat: 'xxxxxxxxxxxxrrrr' }]
+  }, { fallback: 'dr_pop' });
+  groove('dr_lofi', 'Lazy lo-fi', 'soft and dusty, sitting slightly behind the beat', {
+    '4/4': [{ kick: 'x.........x.....', snare: '....x.......x...', hat: 'x...x...x...x...' },
+      { kick: 'x......x..x.....', snare: '....x.......x...', hat: 'x.x.x.x.x.x.x.x.' },
+      { kick: 'x......x..x.x...', snare: '....x..g....x...', hat: 'x.xxx.x.x.xxx.x.' }]
+  }, { fallback: 'dr_pop', softFill: true });
+  groove('dr_swing', 'Swing ride', 'jazz ride "ding, ding-a-ding" with the hi-hat on 2 and 4', {
+    '4/4': [{ ride: 'x...x...x...x...', hat: '....x.......x...' },
+      { ride: 'x...x.x.x...x.x.', hat: '....x.......x...', kick: 'g...g...g...g...' },
+      { ride: 'x...x.x.x...x.x.', hat: '....x.......x...', kick: 'g...g...g...g...', snare: ['......g.....g.g.', '..g.......g...g.', 'g.....g...g.....'] }],
+    '3/4': [{ ride: 'x...x...x...', hat: '....x...x...' },
+      { ride: 'x...x.x.x...', hat: '....x...x...', kick: 'g...........' },
+      { ride: 'x...x.x.x.x.', hat: '....x...x...', kick: 'g...........', snare: ['......g.....', '..g.....g...'] }]
+  }, { fallback: 'dr_pop', softFill: true });
+  groove('dr_brush', 'Brushes', 'soft brush swirls for ballads and cafés', {
+    '4/4': [{ brush: 'x...x...x...x...', hat: '....x.......x...' },
+      { brush: 'x.x.x.x.x.x.x.x.', hat: '....x.......x...', kick: 'x.......x.......' },
+      { brush: 'xxxxxxxxxxxxxxxx', hat: '....x.......x...', kick: 'x.......x.......', snare: '......g.......g.' }],
+    '3/4': [{ brush: 'x...x...x...', hat: '....x...x...' },
+      { brush: 'x.x.x.x.x.x.', kick: 'x...........', hat: '....x...x...' },
+      { brush: 'xxxxxxxxxxxx', kick: 'x...........', hat: '....x...x...' }]
+  }, { fallback: 'dr_pop', softFill: true });
+  groove('dr_shuffle', 'Shuffle', 'bouncy triplet shuffle (blues, boogie) - use with full swing', {
+    '4/4': [{ kick: 'x.......x.......', snare: '....x.......x...', hat: 'x.x.x.x.x.x.x.x.' },
+      { kick: 'x.......x.x.....', snare: '....x.......x...', ride: 'x.x.x.x.x.x.x.x.' },
+      { kick: 'x.x.....x.x.....', snare: '....x..g....x..g', ride: 'x.x.x.x.x.x.x.x.' }],
+    '12/8': [{ kick: 'x.....x.....', snare: '...x.....x..', hat: 'x.xx.xx.xx.x' }]
+  }, { fallback: 'dr_pop' });
+  groove('dr_bossa', 'Bossa nova', 'cross-stick clave over a soft samba kick', {
+    '4/4': [{ rim: 'x.....x.....x...|....x.....x.....', hat: 'x.x.x.x.x.x.x.x.' },
+      { rim: 'x.....x.....x...|....x.....x.....', kick: 'x.....x.x.....x.', hat: 'x.x.x.x.x.x.x.x.' },
+      { rim: 'x.....x.....x...|....x.....x.....', kick: 'x.....x.x.....x.', shaker: 'xxxxxxxxxxxxxxxx' }]
+  }, { fallback: 'dr_pop', softFill: true });
+  groove('dr_reggae', 'One drop', 'reggae: beat 1 left empty, kick and rim together on beat 3', {
+    '4/4': [{ kick: '........x.......', rim: '........x.......', hat: 'x.x.x.x.x.x.x.x.' },
+      { kick: '........x.......', rim: '........x.......', hat: 'x.x.x.x.x.x.x.x.', ohat: '..............x.' },
+      { kick: '........x.......', rim: '........x.....x.', hat: 'xxxxxxxxxxxxxxxx' }]
+  }, { fallback: 'dr_pop' });
+  groove('dr_march', 'March', 'crisp snare rudiments over a bass drum on 1 and 3 (parade, military)', {
+    '4/4': [{ kick: 'x.......x.......', snare: 'x...x...x...x...' },
+      { kick: 'x.......x.......', snare: 'x.xxx.x.x.xxx.x.' },
+      { kick: 'x.......x.......', snare: 'x.xxx.xxx.xxr.xx' }],
+    '3/4': [{ kick: 'x...........', snare: 'x...x...x...' }, { kick: 'x...........', snare: 'x.xxx.x.x.x.' }, { kick: 'x.......x...', snare: 'x.xxx.xxr.xx' }],
+    '6/8': [{ kick: 'x.....x.....', snare: 'x...x.x...x.' }, { kick: 'x.....x.....', snare: 'x.xx.xx.xx.x' }, { kick: 'x.....x.....', snare: 'xrxx.xx.xxrx' }]
+  });
+  groove('dr_waltz', 'Waltz', 'boom-chick-chick in three', {
+    '3/4': [{ kick: 'x...........', hat: '....x...x...' },
+      { kick: 'x...........', snare: '....g...g...', hat: 'x...x...x...' },
+      { kick: 'x.......x...', snare: '....x...x...', hat: 'x.x.x.x.x.x.' }]
+  }, { fallback: 'dr_pop', softFill: true });
+  groove('dr_jig', 'Frame drum (jig, reel)', 'Celtic bodhrán pulse, accents on the main beats', {
+    '6/8': [{ tomlo: 'x..x..' }, { tomlo: 'X..X..', tom: '.xx.xx' }, { tomlo: 'X.xX.x', tom: '.x..x.', shaker: 'xxxxxx' }],
+    '4/4': [{ tomlo: 'x...x...x...x...' }, { tomlo: 'X...x...X...x...', tom: '..x...x...x...x.' }, { tomlo: 'X.x.x.x.X.x.x.x.', tom: '.x.x...x.x.x...x' }],
+    '3/4': [{ tomlo: 'x...........' }, { tomlo: 'X.......x...', tom: '....x...x...' }, { tomlo: 'X...x...x...', tom: '..x...x...x.' }]
+  }, { fillMap: { S: 'tom', T1: 'tom', T2: 'tomlo', T3: 'tomlo', K: 'tomlo' } });
+  groove('dr_folk', 'Folk stomp', 'foot stomps, claps and shaker (folk, village, campfire)', {
+    '4/4': [{ kick: 'x.......x.......', shaker: 'x.x.x.x.x.x.x.x.' },
+      { kick: 'x...x...x...x...', clap: '....x.......x...', shaker: 'x.x.x.x.x.x.x.x.' },
+      { kick: 'x...x...x...x...', clap: '....x.......x...', tamb: 'x.x.x.x.x.x.x.x.', shaker: 'xxxxxxxxxxxxxxxx' }],
+    '3/4': [{ kick: 'x...........', shaker: 'x.x.x.x.x.x.' },
+      { kick: 'x...........', clap: '....x...x...', shaker: 'x.x.x.x.x.x.' },
+      { kick: 'x.......x...', clap: '....x...x...', tamb: 'xxxxxxxxxxxx' }],
+    '6/8': [{ kick: 'x.....x.....', shaker: 'x.x.x.x.x.x.' },
+      { kick: 'x.....x.....', clap: '....x.....x.', shaker: 'x.x.x.x.x.x.' },
+      { kick: 'x.....x.....', clap: '....x.....x.', tamb: 'xxxxxxxxxxxx' }]
+  }, { fillMap: { S: 'clap', T1: 'tom', T2: 'tom', T3: 'kick', K: 'kick' }, softFill: true });
+  groove('dr_epic', 'Epic drums', 'thunderous taiko and tom patterns (battle, trailer)', {
+    '4/4': [{ taiko: 'x.......x.......' },
+      { taiko: 'x..x..x.x.......', tom: '..........x.x...', taikorim: '....x.......x...' },
+      { taiko: 'x..x..x.x..x..x.', tom: 'x.xx.xx.x.xx.xx.', snare: '....x.......x...' }],
+    '3/4': [{ taiko: 'x...........' }, { taiko: 'x..x..x.....', taikorim: '....x...x...' }, { taiko: 'x..x..x..x..', tom: '.x.x.x.x.x.x', snare: '....x...x...' }],
+    '6/8': [{ taiko: 'x.....x.....' }, { taiko: 'x..x..x.....', taikorim: '....x.....x.' }, { taiko: 'x..x..x..x..', tom: 'x.xx.xx.xx.x' }]
+  }, { fillMap: { S: 'taikorim', T1: 'tomhi', T2: 'tom', T3: 'taiko', K: 'taiko' }, crashy: true });
+  groove('dr_cinematic', 'Cinematic pulse', 'deep booms and toms that build tension', {
+    '4/4': [{ boom: 'x...............' },
+      { boom: 'x.......x.......', tomlo: '....x.......x...' },
+      { boom: 'x.......x.......', tomlo: 'x..x..x.x..x..x.', tom: '....x.......x...', snare: '..x...x...x...x.' }],
+    '3/4': [{ boom: 'x...........' }, { boom: 'x...........', tomlo: '....x...x...' }, { boom: 'x.......x...', tomlo: 'x..x..x..x..', snare: '..x...x...x.' }],
+    '6/8': [{ boom: 'x...........' }, { boom: 'x.....x.....', tomlo: '...x.....x..' }, { boom: 'x.....x.....', tomlo: 'x..x..x..x..', snare: '.x..x..x..x.' }]
+  }, { fillMap: { S: 'snare', T1: 'tom', T2: 'tomlo', T3: 'boom', K: 'boom' } });
+  groove('dr_ambient', 'Soft pulse', 'barely-there shaker and rim taps (exploration, ambient)', {
+    '4/4': [{ shaker: '........x.......' }, { shaker: 'x.x.x.x.x.x.x.x.', rim: '....x.......x...' }, { shaker: 'xxxxxxxxxxxxxxxx', rim: '....x.......x...', kick: 'x.........x.....' }],
+    '3/4': [{ shaker: '........x...' }, { shaker: 'x.x.x.x.x.x.', rim: '....x...x...' }, { shaker: 'xxxxxxxxxxxx', rim: '....x...x...', kick: 'x...........' }],
+    '6/8': [{ shaker: '......x.....' }, { shaker: 'x.x.x.x.x.x.', rim: '......x.....' }, { shaker: 'xxxxxxxxxxxx', rim: '......x.....', kick: 'x...........' }]
+  }, { noFill: true });
+  groove('dr_tribal', 'Tribal toms', 'rolling tom patterns (jungle, ritual, chase)', {
+    '4/4': [{ tomlo: 'x.....x...x.....' }, { tomlo: 'x..x..x...x..x..', tom: '..x.....x.....x.' }, { tomlo: 'x..x..x.x.x..x..', tom: '..x.x...x.x.x...', tomhi: '.x.....x.....x..' }],
+    '3/4': [{ tomlo: 'x.....x.....' }, { tomlo: 'x..x..x.....', tom: '....x.....x.' }, { tomlo: 'x..x..x..x..', tom: '.x.x.x.x.x.x' }],
+    '6/8': [{ tomlo: 'x.....x.....' }, { tomlo: 'x..x..x..x..', tom: '.x..x..x..x.' }, { tomlo: 'x.xx.xx.xx.x', tom: '.x..x..x..x.', tomhi: '..x..x..x..x' }]
+  });
+  groove('dr_funk', 'Funk', 'tight sixteenth hi-hats, syncopated kick, ghost notes', {
+    '4/4': [{ kick: 'x.....x...x.....', snare: '....x.......x...', hat: 'x.x.x.x.x.x.x.x.' },
+      { kick: 'x..x..x...x..x..', snare: '....x..g.g..x..g', hat: 'xxxxxxxxxxxxxxxx' },
+      { kick: 'x..x..x.x.x..x..', snare: '.g..x..g.g..x.gg', hat: 'xxxxxxoxxxxxxxox' }]
+  }, { fallback: 'dr_pop' });
+
+  // ======================= PERCUSSION (extra colour) =======================
+  function perc(id, name, desc, pat, extra) {
+    var o = { roles: ['perc', 'drums'], kind: 'groove', name: name, desc: desc, pat: pat, noFill: true };
+    for (var k in extra) o[k] = extra[k];
+    def(id, o);
+  }
+  perc('pc_shaker', 'Shaker', 'steady shaker eighths or sixteenths', {
+    '4/4': [{ shaker: 'x.x.x.x.x.x.x.x.' }, { shaker: 'XxxxXxxxXxxxXxxx' }, { shaker: 'XxxxXxxxXxxxXxxx', tamb: '....x.......x...' }],
+    '3/4': [{ shaker: 'x.x.x.x.x.x.' }, { shaker: 'XxxxXxxxXxxx' }, { shaker: 'XxxxXxxxXxxx', tamb: '....x...x...' }],
+    '6/8': [{ shaker: 'x.x.x.x.x.x.' }, { shaker: 'XxxxxxXxxxxx' }, { shaker: 'XxxxxxXxxxxx', tamb: '......x.....' }]
+  });
+  perc('pc_tamb', 'Tambourine', 'tambourine on the backbeat or shaking along', {
+    '4/4': [{ tamb: '....x.......x...' }, { tamb: 'x.x.x.x.x.x.x.x.' }, { tamb: 'xxxxxxxxxxxxxxxx' }],
+    '3/4': [{ tamb: '....x...x...' }, { tamb: 'x.x.x.x.x.x.' }, { tamb: 'xxxxxxxxxxxx' }],
+    '6/8': [{ tamb: '......x.....' }, { tamb: 'x.x.x.x.x.x.' }, { tamb: 'xxxxxxxxxxxx' }]
+  });
+  perc('pc_clave', 'Clave', 'the 3-2 son clave, the key rhythm of Latin music', {
+    '4/4': [{ clave: 'x.....x.....x...|....x...x.......' }]
+  }, { fallback: 'pc_woodblock' });
+  perc('pc_woodblock', 'Woodblock', 'tick-tock woodblock (clockwork, cartoon, Eastern)', {
+    '4/4': [{ woodblock: 'x...x...x...x...' }, { woodblock: 'x...x...x...x...', clave: '..x...x...x...x.' }, { woodblock: 'x.x.x.x.x.x.x.x.' }],
+    '3/4': [{ woodblock: 'x...x...x...' }, { woodblock: 'x...x...x...', clave: '..x...x...x.' }, { woodblock: 'x.x.x.x.x.x.' }],
+    '6/8': [{ woodblock: 'x.....x.....' }, { woodblock: 'x..x..x..x..' }, { woodblock: 'x.xx.xx.xx.x' }]
+  });
+  perc('pc_triangle', 'Triangle', 'a bright ting on the strong beats', {
+    '4/4': [{ triangle: 'x...............' }, { triangle: 'x.......x.......' }, { triangle: 'x...x...x...x...' }],
+    '3/4': [{ triangle: 'x...........' }, { triangle: 'x.......x...' }, { triangle: 'x...x...x...' }],
+    '6/8': [{ triangle: 'x...........' }, { triangle: 'x.....x.....' }, { triangle: 'x..x..x..x..' }]
+  });
+  perc('pc_hand', 'Hand drums', 'congas and bongos (Latin, tropical, tribal)', {
+    '4/4': [{ conga: '......x.......x.', congahi: '....x.......x...' },
+      { conga: '......x.x.....x.', congahi: '....x.......x...', bongo: 'x.x.x.x.x.x.x.x.' },
+      { conga: '..x...x.x.x...x.', congahi: '....x..x....x..x', bongo: 'xxxxxxxxxxxxxxxx' }],
+    '3/4': [{ conga: '........x...', congahi: '....x.......' }, { conga: '......x.x...', congahi: '....x.......', bongo: 'x.x.x.x.x.x.' }, { conga: '..x...x.x.x.', congahi: '....x..x....', bongo: 'xxxxxxxxxxxx' }],
+    '6/8': [{ conga: 'x.....x.....', congahi: '...x.....x..' }, { conga: 'x..x..x..x..', congahi: '..x..x..x..x' }, { conga: 'x.xx.xx.xx.x', congahi: '.x..x..x..x.', bongo: 'xxxxxxxxxxxx' }]
+  });
+  perc('pc_taiko', 'Taiko ensemble', 'big taiko with the small shime drum chattering', {
+    '4/4': [{ taiko: 'x.......x.......' }, { taiko: 'x..x..x.x.......', shime: 'x.x.x.x.x.x.x.x.' }, { taiko: 'x..x..x.x..x..x.', shime: 'xxxxxxxxxxxxxxxx', taikorim: '....x.......x...' }],
+    '3/4': [{ taiko: 'x...........' }, { taiko: 'x..x..x.....', shime: 'x.x.x.x.x.x.' }, { taiko: 'x..x..x..x..', shime: 'xxxxxxxxxxxx' }],
+    '6/8': [{ taiko: 'x.....x.....' }, { taiko: 'x..x..x.....', shime: 'x.x.x.x.x.x.' }, { taiko: 'x..x..x..x..', shime: 'xxxxxxxxxxxx' }]
+  });
+  perc('pc_snaps', 'Finger snaps', 'cool snaps on the backbeat (jazz, lo-fi)', {
+    '4/4': [{ snap: '....x.......x...' }, { snap: '....x.......x...' }, { snap: '....x.....x.x...' }],
+    '3/4': [{ snap: '....x...x...' }], '6/8': [{ snap: '......x.....' }]
+  });
+  perc('pc_cowbell', 'Cowbell', 'cowbell pulse (disco, Latin, rock)', {
+    '4/4': [{ cowbell: 'x...x...x...x...' }, { cowbell: 'x.x.x.x.x.x.x.x.' }, { cowbell: 'x.xxx.xxx.xxx.xx' }]
+  }, { fallback: 'pc_woodblock' });
+
+  // drum fills, by meter: beats = length at the end of the bar; lines use the groove's fillMap
+  K.FILLS = {
+    '4/4': [
+      { beats: 1, lines: { S: 'xxxx' } }, { beats: 1, lines: { S: 'x.xx', K: 'x...' } }, { beats: 1, lines: { T1: 'xx..', T2: '..xx' } },
+      { beats: 2, lines: { S: 'x.x.xxxx' } }, { beats: 2, lines: { T1: 'xx......', T2: '..xx....', T3: '....xxxx' } }, { beats: 2, lines: { S: 'xx..xx..', T3: '..xx..xx' } }
+    ],
+    '3/4': [{ beats: 1, lines: { S: 'xxxx' } }, { beats: 1, lines: { T1: 'xx..', T3: '..xx' } }, { beats: 2, lines: { S: 'x.x.xxxx' } }],
+    '6/8': [{ beats: 1, lines: { S: 'xxx' } }, { beats: 1, lines: { T1: 'x..', T2: '.x.', T3: '..x' } }, { beats: 2, lines: { S: 'x.x', T1: '...xx.', T3: '.....x' } }]
+  };
+
+  // loudness trims (dB) for techniques whose patterns are much sparser or denser than average
+  var TRIM = { dr_swing: 9, dr_brush: 5, dr_ambient: 4, dr_jig: -3, dr_epic: -2, dr_bossa: 1, dr_reggae: 2, stabs: 2, sparkle: 7, answer: 3,
+    pc_woodblock: 3, pc_triangle: 2, pc_snaps: 2, drone: 5, fragments: 2, ac_bell: 2, skank: 4, comp: 3 };
+  Object.keys(TRIM).forEach(function (k) { if (T[k]) T[k].trim = TRIM[k]; });
+  K.TECH = T;
+  K.TECH_ORDER = Object.keys(T);
+
+  // ---------------------------------------------------------------- idioms: what suits each sound family
+  // first entry = the natural default when no genre preference applies
+  K.IDIOMS = {
+    chords: {
+      Keys: ['block', 'ballad', 'comp', 'stride', 'pulse', 'alberti', 'hold'], Plucked: ['strum', 'fingerpick', 'strum8', 'comp', 'bossa', 'skank', 'power', 'harp_roll'],
+      'Mallets & Bells': ['hold', 'block', 'broken3'], Strings: ['hold', 'tremolo', 'swell', 'ostinato', 'stabs', 'pulse'], 'Pads & Drones': ['hold', 'swell', 'gate', 'tremolo'],
+      Winds: ['hold', 'stabs', 'swell'], Brass: ['hold', 'stabs', 'swell'], Leads: ['stabs', 'pulse', 'gate'], Choir: ['hold', 'swell'], Chiptune: ['pulse', 'stabs', 'hold'], _: ['block', 'hold']
+    },
+    arp: {
+      Keys: ['arp_updown', 'ballad', 'alberti', 'broken3', 'arp_up'], Plucked: ['arp_updown', 'fingerpick', 'harp_roll', 'arp_up', 'broken3'],
+      'Mallets & Bells': ['arp_updown', 'broken3', 'sparkle', 'arp_up', 'arp_random'], Strings: ['ostinato', 'arp_updown'], Chiptune: ['arp_up', 'arp_updown', 'arp_random'],
+      Leads: ['arp_up', 'arp_random'], _: ['arp_updown', 'arp_up', 'arp_down', 'arp_random', 'broken3']
+    },
+    bass: {
+      Bass: ['root_beats', 'root_fifth', 'walking', 'pump', 'octave', 'funk', 'reggae', 'bossa_bass', 'b808', 'gallop', 'synth_arp_bass', 'bass_hold', 'pedal', 'tuba'],
+      Strings: ['bass_hold', 'root_beats', 'root_fifth', 'pump'], Brass: ['tuba', 'root_fifth', 'bass_hold'], Keys: ['root_beats', 'bass_hold', 'walking'],
+      Chiptune: ['octave', 'pump', 'synth_arp_bass', 'root_beats'], Plucked: ['root_fifth', 'root_beats', 'walking'], _: ['root_beats', 'bass_hold', 'root_fifth']
+    },
+    pad: { _: ['hold', 'swell', 'drone', 'shimmer', 'tremolo', 'gate', 'pedal'] },
+    melody: { _: ['lead', 'fragments', 'ornate', 'octaves'] },
+    counter: { _: ['answer', 'third_below', 'counterline', 'sixth_below', 'double_low', 'unison', 'sparkle'] },
+    drums: { _: ['dr_pop', 'dr_rock', 'dr_halftime', 'dr_four', 'dr_hiphop', 'dr_trap', 'dr_lofi', 'dr_swing', 'dr_brush', 'dr_shuffle', 'dr_bossa', 'dr_reggae', 'dr_march', 'dr_waltz', 'dr_jig', 'dr_folk', 'dr_epic', 'dr_cinematic', 'dr_ambient', 'dr_tribal', 'dr_funk'] },
+    perc: { _: ['pc_shaker', 'pc_tamb', 'pc_hand', 'pc_woodblock', 'pc_clave', 'pc_triangle', 'pc_taiko', 'pc_snaps', 'pc_cowbell'] },
+    accent: { _: ['ac_phrase', 'ac_roll', 'ac_chord', 'ac_bell', 'stabs', 'sparkle'] }
+  };
+  var SOUND_IDIOMS = {
+    dist_guitar: { chords: ['power', 'strum8'] }, harp: { chords: ['harp_roll', 'ballad', 'fingerpick'], arp: ['harp_roll', 'arp_updown', 'broken3'] },
+    pizzicato: { chords: ['block', 'stride', 'ostinato'], arp: ['arp_updown', 'ostinato'], bass: ['root_fifth', 'tuba'] },
+    timpani: { accent: ['ac_roll', 'ac_phrase'], bass: ['root_fifth', 'tuba'] }, organ: { chords: ['hold', 'skank', 'stride', 'pulse'] },
+    church_organ: { chords: ['hold', 'swell'] }, accordion: { chords: ['stride', 'hold', 'pulse'], pad: ['hold'] }, banjo: { chords: ['fingerpick', 'strum'] },
+    harpsichord: { chords: ['alberti', 'block', 'ballad'] }, music_box: { arp: ['broken3', 'arp_updown'] }, celesta: { arp: ['broken3', 'sparkle'] },
+    synth_pluck: { arp: ['arp_up', 'arp_updown', 'arp_random'] }, bass808: { bass: ['b808', 'bass_hold'] }, upright_bass: { bass: ['walking', 'root_fifth', 'bossa_bass'] },
+    tuba: { bass: ['tuba', 'root_fifth'] }, temple_bell: { accent: ['ac_bell', 'ac_phrase'] }
+  };
+  K.techniqueSuits = function (role, sound) {
+    var fam = sound === 'drums' ? 'Drums' : (DM.PRESETS[sound] && DM.PRESETS[sound].family) || '_';
+    var ro = K.IDIOMS[role] || {};
+    var list = (SOUND_IDIOMS[sound] && SOUND_IDIOMS[sound][role]) || [];
+    var meta = K.soundMeta(sound);
+    if (meta.guitar && role === 'chords') list = list.concat(['strum', 'fingerpick', 'strum8', 'comp', 'bossa', 'skank', 'power']);
+    if (meta.mallet && role === 'chords') list = list.concat(['hold', 'block']);
+    list = list.concat(ro[fam] || [], ro._ || []);
+    return list.filter(function (t, i) { return T[t] && list.indexOf(t) === i; });
+  };
+  // every technique a role may use (suited ones first)
+  K.techniquesFor = function (role, sound) {
+    var suits = K.techniqueSuits(role, sound);
+    var rest = K.TECH_ORDER.filter(function (t) { return T[t].roles.indexOf(role) >= 0 && suits.indexOf(t) < 0; });
+    return { suits: suits, other: rest };
+  };
+  // pattern levels for a meter, following fallbacks; null for non-pattern techniques
+  K.patternFor = function (tech, meter) {
+    var seen = 0, t = tech;
+    while (t && seen++ < 4) {
+      if (!t.pat) return null;
+      if (t.pat[meter]) return t.pat[meter];
+      if (meter === '12/8' && t.pat['6/8']) return t.pat['6/8'].map(function (lv) { return doubleLevel(lv); });
+      if (meter === '2/4' && t.pat['4/4']) return t.pat['4/4'].map(function (lv) { return halfLevel(lv); });
+      t = t.fallback ? T[t.fallback] : null;
+    }
+    var base = T[tech.roles.indexOf('drums') >= 0 || tech.roles.indexOf('perc') >= 0 ? 'dr_pop' : tech.roles[0] === 'bass' ? 'root_beats' : 'block'];
+    return base.pat[meter] || base.pat['4/4'];
+  };
+  function mapLevel(lv, fn) {
+    if (Array.isArray(lv)) return lv.map(function (x) { return mapLevel(x, fn); });
+    if (typeof lv === 'string') return fn(lv);
+    var o = {};
+    for (var k in lv) o[k] = mapLevel(lv[k], fn);
+    return o;
+  }
+  function doubleLevel(lv) { return mapLevel(lv, function (s) { return s.split('|').map(function (b) { return b + b; }).join('|'); }); }
+  function halfLevel(lv) { return mapLevel(lv, function (s) { return s.split('|').map(function (b) { return b.slice(0, b.length / 2); }).join('|'); }); }
+}),
+(function (DM) {
+  'use strict';
+  var K = DM.K = DM.K || {};
+  var G = {};
+  function g(id, o) { o.id = id; G[id] = o; }
+
+  g('folk', {
+    name: 'Folk village', desc: 'acoustic, homely, dancing villagers', tempo: 100, meter: '4/4', swing: 0, key: 'G', scale: 'major', prog: 'folk', speed: 1,
+    color: 0.25, variety: 0.45, tune: 'dance', energy: 0.5, space: 0.35, bright: 0.6, kit: 'folk',
+    tech: { chords: { Plucked: 'strum', Keys: 'stride', _: 'hold' }, bass: 'root_fifth', arp: 'arp_updown', pad: 'hold', drums: 'dr_folk', perc: 'pc_tamb', melody: 'ornate', counter: 'answer', accent: 'ac_phrase' },
+    band: [['Fiddle', 'fiddle', 'melody'], ['Acoustic guitar', 'acoustic_guitar', 'chords'], ['Upright bass', 'upright_bass', 'bass'],
+      ['Accordion', 'accordion', 'pad', null, {}, { vol: 0.45 }], ['Folk percussion', 'drums:folk', 'drums', null, {}, {}, 0.3]]
+  });
+  g('town', {
+    name: 'Cozy town', desc: 'cute, bouncy RPG town or shop', tempo: 108, meter: '4/4', swing: 0.15, key: 'F', scale: 'major', prog: 'nostalgic', speed: 1,
+    color: 0.35, variety: 0.4, tune: 'playful', energy: 0.45, space: 0.3, bright: 0.65, kit: 'acoustic',
+    tech: { chords: { Plucked: 'block', Keys: 'stride', _: 'block' }, bass: 'tuba', arp: 'broken3', pad: 'hold', drums: 'dr_pop', perc: 'pc_woodblock', melody: 'lead', counter: 'answer', accent: 'ac_phrase' },
+    band: [['Clarinet', 'clarinet', 'melody'], ['Pizzicato strings', 'pizzicato', 'chords', 'stride'], ['Tuba', 'tuba', 'bass'],
+      ['Xylophone', 'xylophone', 'counter', 'answer', {}, { vol: 0.55 }], ['Woodblock', 'drums:folk', 'perc', 'pc_woodblock', {}, { vol: 0.5 }]]
+  });
+  g('celtic', {
+    name: 'Celtic jig', desc: 'lilting 6/8 dance from the misty highlands', tempo: 108, meter: '6/8', swing: 0, key: 'D', scale: 'dorian', prog: 'highland', speed: 1,
+    color: 0.2, variety: 0.4, tune: 'dance', energy: 0.55, space: 0.4, bright: 0.6, kit: 'folk',
+    tech: { chords: { Plucked: 'strum', _: 'hold' }, bass: 'root_fifth', arp: 'arp_updown', pad: 'drone', drums: 'dr_jig', perc: 'pc_shaker', melody: 'ornate', counter: 'third_below', accent: 'ac_phrase' },
+    band: [['Tin whistle', 'tin_whistle', 'melody'], ['Fiddle harmony', 'fiddle', 'counter', 'third_below', {}, { vol: 0.5 }, 0.45], ['Guitar', 'acoustic_guitar', 'chords'],
+      ['Harp', 'harp', 'arp', null, { busy: 0.35 }, { vol: 0.5 }], ['Bodhran', 'drums:folk', 'drums'], ['Drone', 'drone_pad', 'pad', 'drone', {}, { vol: 0.35 }]]
+  });
+  g('orchestral', {
+    name: 'Orchestral adventure', desc: 'sweeping open-world exploration with strings and horns', tempo: 92, meter: '4/4', swing: 0, key: 'D', scale: 'major', prog: 'heroic', speed: 1,
+    color: 0.3, variety: 0.5, tune: 'lyrical', energy: 0.5, space: 0.6, bright: 0.55, kit: 'orchestral',
+    tech: { chords: { Strings: 'hold', Plucked: 'harp_roll', _: 'hold' }, bass: 'bass_hold', arp: 'arp_updown', pad: 'hold', drums: 'dr_cinematic', perc: 'pc_triangle', melody: 'lead', counter: 'counterline', accent: 'ac_roll' },
+    band: [['French horn', 'french_horn', 'melody'], ['Strings', 'strings', 'chords', 'hold'], ['Harp', 'harp', 'arp', 'arp_updown', { busy: 0.4 }, { vol: 0.5 }],
+      ['Cello line', 'cello', 'counter', 'counterline', {}, { vol: 0.55 }], ['Contrabass', 'pizzicato', 'bass', 'root_fifth', { reg: -1 }], ['Flute', 'flute', 'counter', 'answer', {}, { vol: 0.5 }, 0.55],
+      ['Timpani', 'timpani', 'accent', 'ac_roll', {}, { vol: 0.6 }, 0.5]]
+  });
+  g('epic', {
+    name: 'Epic battle', desc: 'urgent, driving fight music', tempo: 150, meter: '4/4', swing: 0, key: 'D', scale: 'minor', prog: 'battle', speed: 1,
+    color: 0.15, variety: 0.35, tune: 'heroic', energy: 0.8, space: 0.5, bright: 0.6, kit: 'taiko',
+    tech: { chords: { Strings: 'ostinato', Brass: 'stabs', _: 'power' }, bass: 'pump', arp: 'ostinato', pad: 'hold', drums: 'dr_epic', perc: 'pc_taiko', melody: 'octaves', counter: 'counterline', accent: 'ac_phrase' },
+    band: [['Brass theme', 'brass', 'melody', 'octaves'], ['String ostinato', 'strings', 'chords', 'ostinato'], ['Low strings', 'cello', 'bass', 'pump'],
+      ['Choir', 'choir_ah', 'pad', 'hold', {}, { vol: 0.5 }, 0.5], ['Taiko drums', 'drums:taiko', 'drums'], ['Brass stabs', 'synth_brass', 'accent', 'stabs', {}, { vol: 0.5 }, 0.7]]
+  });
+  g('tension', {
+    name: 'Tension / stealth', desc: 'sneaking, danger nearby, suspense', tempo: 96, meter: '4/4', swing: 0, key: 'E', scale: 'phrygian', prog: 'drone', speed: 2,
+    color: 0.1, variety: 0.3, tune: 'mysterious', presence: 0.5, energy: 0.4, space: 0.6, bright: 0.45, kit: 'orchestral',
+    tech: { chords: { Strings: 'ostinato', _: 'pulse' }, bass: 'pedal', arp: 'ostinato', pad: 'tremolo', drums: 'dr_cinematic', perc: 'pc_shaker', melody: 'fragments', counter: 'counterline', accent: 'ac_phrase' },
+    band: [['Pizzicato pulse', 'pizzicato', 'chords', 'ostinato', { busy: 0.4 }], ['Tremolo strings', 'dark_strings', 'pad', 'tremolo', {}, { vol: 0.5 }],
+      ['Low drone', 'drone_pad', 'bass', 'drone', {}, { vol: 0.6 }], ['Piano notes', 'felt_piano', 'melody', 'fragments', {}, { vol: 0.6 }], ['Booms', 'drums:orchestral', 'drums', 'dr_cinematic', { busy: 0.3 }, {}, 0.45]]
+  });
+  g('ambient', {
+    name: 'Ambient explore', desc: 'calm, wide open, gentle piano fragments', tempo: 72, meter: '4/4', swing: 0, key: 'C', scale: 'lydian', prog: 'floating', speed: 2,
+    color: 0.55, variety: 0.4, tune: 'gentle', presence: 0.7, energy: 0.25, space: 0.85, bright: 0.5, kit: 'lofi',
+    tech: { chords: 'hold', bass: 'bass_hold', arp: 'sparkle', pad: 'hold', drums: 'dr_ambient', perc: 'pc_shaker', melody: 'fragments', counter: 'answer', accent: 'ac_bell' },
+    band: [['Felt piano', 'felt_piano', 'melody', 'fragments'], ['Glass pad', 'glass_pad', 'pad'], ['Celesta sparkles', 'celesta', 'arp', 'sparkle', {}, { vol: 0.45 }],
+      ['Soft bass', 'sub_bass', 'bass', 'bass_hold', {}, { vol: 0.5 }], ['Wind', 'wind_pad', 'pad', 'drone', {}, { vol: 0.3 }, 0.4]]
+  });
+  g('horror', {
+    name: 'Horror', desc: 'dread, creaking, something is wrong', tempo: 60, meter: '4/4', swing: 0, key: 'C', scale: 'chromatic', prog: 'sinister', speed: 2,
+    color: 0.2, variety: 0.35, tune: 'mysterious', presence: 0.5, energy: 0.3, space: 0.75, bright: 0.4, kit: 'orchestral',
+    tech: { chords: 'tremolo', bass: 'pedal', arp: 'sparkle', pad: 'tremolo', drums: 'dr_cinematic', perc: 'pc_triangle', melody: 'fragments', counter: 'counterline', accent: 'ac_phrase' },
+    band: [['Dark strings', 'dark_strings', 'pad', 'tremolo'], ['Old piano', 'detuned_piano', 'melody', 'fragments'], ['Music box', 'music_box', 'arp', 'sparkle', { busy: 0.25 }, { vol: 0.45 }],
+      ['Drone', 'drone_pad', 'bass', 'drone', {}, { vol: 0.6 }], ['Booms', 'drums:orchestral', 'accent', 'ac_phrase', {}, { vol: 0.6 }, 0.5]]
+  });
+  g('jazz', {
+    name: 'Jazz café', desc: 'swinging, smoky, sophisticated', tempo: 126, meter: '4/4', swing: 0.65, key: 'F', scale: 'major', prog: 'jazz_turn', speed: 1,
+    color: 0.8, variety: 0.5, tune: 'jazzy', energy: 0.5, space: 0.35, bright: 0.55, kit: 'jazz',
+    tech: { chords: { Keys: 'comp', Plucked: 'comp', _: 'hold' }, bass: 'walking', arp: 'arp_updown', pad: 'hold', drums: 'dr_swing', perc: 'pc_snaps', melody: 'lead', counter: 'answer', accent: 'stabs' },
+    band: [['Saxophone', 'soft_sax', 'melody'], ['Jazz piano', 'rhodes', 'chords', 'comp'], ['Upright bass', 'upright_bass', 'bass', 'walking'],
+      ['Jazz drums', 'drums:jazz', 'drums', 'dr_swing'], ['Vibraphone', 'vibraphone', 'counter', 'answer', {}, { vol: 0.45 }, 0.5]]
+  });
+  g('lofi', {
+    name: 'Lo-fi chill', desc: 'dusty beats, mellow chords, rainy window', tempo: 78, meter: '4/4', swing: 0.4, swing16: true, key: 'Eb', scale: 'major', prog: 'neosoul', speed: 1,
+    color: 0.85, variety: 0.35, tune: 'gentle', presence: 0.6, energy: 0.4, space: 0.4, bright: 0.4, lofi: 0.5, humanize: 0.6, kit: 'lofi',
+    tech: { chords: { Keys: 'block', _: 'hold' }, bass: 'root_beats', arp: 'arp_updown', pad: 'hold', drums: 'dr_lofi', perc: 'pc_snaps', melody: 'fragments', counter: 'answer', accent: 'ac_bell' },
+    band: [['Lo-fi keys', 'lofi_keys', 'chords', 'block', { busy: 0.2, timing: -0.4 }], ['Piano melody', 'felt_piano', 'melody', 'fragments'], ['Warm bass', 'sub_bass', 'bass', 'root_beats', { busy: 0.2 }],
+      ['Lo-fi drums', 'drums:lofi', 'drums', 'dr_lofi', { timing: -0.5 }]]
+  });
+  g('synthwave', {
+    name: 'Synthwave', desc: 'neon night drive, retro 80s', tempo: 104, meter: '4/4', swing: 0, key: 'A', scale: 'minor', prog: 'epic', speed: 1,
+    color: 0.35, variety: 0.35, tune: 'lyrical', energy: 0.65, space: 0.55, bright: 0.7, kit: 'electronic',
+    tech: { chords: 'pulse', bass: 'pump', arp: 'arp_up', pad: 'hold', drums: 'dr_pop', perc: 'pc_shaker', melody: 'lead', counter: 'answer', accent: 'stabs' },
+    band: [['Supersaw lead', 'supersaw_lead', 'melody', null, {}, { echo: 0.3 }], ['Supersaw pad', 'supersaw_pad', 'pad'], ['Synth bass', 'synth_bass', 'bass', 'pump'],
+      ['Arp pluck', 'synth_pluck', 'arp', 'arp_up', { busy: 0.8 }, { vol: 0.5, echo: 0.25 }], ['Drum machine', 'drums:electronic', 'drums', 'dr_pop']]
+  });
+  g('chiptune', {
+    name: '8-bit adventure', desc: 'retro console game music', tempo: 140, meter: '4/4', swing: 0, key: 'C', scale: 'major', prog: 'heroic', speed: 1,
+    color: 0.1, variety: 0.4, tune: 'riff', energy: 0.65, space: 0.15, bright: 0.75, kit: 'chip',
+    tech: { chords: 'pulse', bass: 'octave', arp: 'arp_up', pad: 'hold', drums: 'dr_pop', perc: 'pc_shaker', melody: 'lead', counter: 'third_below', accent: 'stabs' },
+    band: [['Pulse lead', 'chip_lead', 'melody'], ['Square arps', 'chip_square', 'arp', 'arp_up', { busy: 0.8 }, { vol: 0.5 }], ['Triangle bass', 'chip_triangle', 'bass', 'octave'],
+      ['Noise drums', 'drums:chip', 'drums'], ['Harmony pulse', 'chip_pulse', 'counter', 'third_below', {}, { vol: 0.45 }, 0.55]]
+  });
+  g('rock', {
+    name: 'Rock', desc: 'loud guitars, big drums, attitude', tempo: 132, meter: '4/4', swing: 0, key: 'E', scale: 'minor_pent', prog: 'battle', speed: 1,
+    color: 0, variety: 0.35, tune: 'riff', energy: 0.75, space: 0.3, bright: 0.65, kit: 'rock',
+    tech: { chords: { Plucked: 'power', Keys: 'pulse', _: 'hold' }, bass: 'pump', arp: 'arp_up', pad: 'hold', drums: 'dr_rock', perc: 'pc_tamb', melody: 'lead', counter: 'third_below', accent: 'stabs' },
+    band: [['Lead guitar', 'lead_guitar', 'melody'], ['Rhythm guitar', 'dist_guitar', 'chords', 'power'], ['Bass guitar', 'bass_guitar', 'bass', 'pump'],
+      ['Rock drums', 'drums:rock', 'drums', 'dr_rock'], ['Organ', 'organ', 'pad', 'hold', {}, { vol: 0.35 }, 0.5]]
+  });
+  g('bossa', {
+    name: 'Bossa nova', desc: 'breezy beach café, Brazil', tempo: 128, meter: '4/4', swing: 0, key: 'D', scale: 'major', prog: 'bossa', speed: 1,
+    color: 0.85, variety: 0.4, tune: 'lyrical', energy: 0.45, space: 0.35, bright: 0.55, kit: 'jazz',
+    tech: { chords: { Plucked: 'bossa', Keys: 'comp', _: 'hold' }, bass: 'bossa_bass', arp: 'arp_updown', pad: 'hold', drums: 'dr_bossa', perc: 'pc_shaker', melody: 'lead', counter: 'answer', accent: 'ac_bell' },
+    band: [['Nylon guitar', 'nylon_guitar', 'chords', 'bossa'], ['Flute', 'flute', 'melody'], ['Upright bass', 'upright_bass', 'bass', 'bossa_bass'],
+      ['Bossa drums', 'drums:jazz', 'drums', 'dr_bossa'], ['Rhodes', 'rhodes', 'pad', 'hold', {}, { vol: 0.35 }, 0.45]]
+  });
+  g('reggae', {
+    name: 'Island reggae', desc: 'laid-back tropical island groove', tempo: 76, meter: '4/4', swing: 0.15, key: 'G', scale: 'mixolydian', prog: 'sunny_vamp', speed: 1,
+    color: 0.2, variety: 0.35, tune: 'lyrical', energy: 0.5, space: 0.4, bright: 0.6, kit: 'acoustic',
+    tech: { chords: { Keys: 'skank', Plucked: 'skank', _: 'skank' }, bass: 'reggae', arp: 'arp_updown', pad: 'hold', drums: 'dr_reggae', perc: 'pc_hand', melody: 'lead', counter: 'answer', accent: 'ac_bell' },
+    band: [['Steel drum', 'steel_drum', 'melody'], ['Skank guitar', 'clean_guitar', 'chords', 'skank'], ['Organ bubble', 'organ', 'chords', 'skank', { busy: 0.8 }, { vol: 0.4 }],
+      ['Bass', 'bass_guitar', 'bass', 'reggae'], ['One-drop drums', 'drums:acoustic', 'drums', 'dr_reggae']]
+  });
+  g('lullaby', {
+    name: 'Lullaby', desc: 'tender, sleepy, music-box night', tempo: 72, meter: '3/4', swing: 0, key: 'F', scale: 'major', prog: 'peaceful', speed: 1,
+    color: 0.3, variety: 0.3, tune: 'lyrical', energy: 0.2, space: 0.55, bright: 0.5, kit: 'orchestral',
+    tech: { chords: { Plucked: 'harp_roll', _: 'hold' }, bass: 'bass_hold', arp: 'broken3', pad: 'hold', drums: 'dr_waltz', perc: 'pc_triangle', melody: 'lead', counter: 'sixth_below', accent: 'ac_bell' },
+    band: [['Music box', 'music_box', 'melody'], ['Harp', 'harp', 'arp', 'ballad', { busy: 0.4 }], ['Warm pad', 'warm_pad', 'pad', 'hold', {}, { vol: 0.45 }],
+      ['Celesta', 'celesta', 'counter', 'sixth_below', {}, { vol: 0.4 }, 0.4]]
+  });
+  g('waltz', {
+    name: 'Waltz', desc: 'elegant ballroom, castle dance', tempo: 144, meter: '3/4', swing: 0, key: 'Bb', scale: 'major', prog: 'classical', speed: 1,
+    color: 0.3, variety: 0.45, tune: 'lyrical', energy: 0.5, space: 0.5, bright: 0.55, kit: 'orchestral',
+    tech: { chords: { Keys: 'stride', Plucked: 'stride', _: 'stride' }, bass: 'tuba', arp: 'arp_updown', pad: 'hold', drums: 'dr_waltz', perc: 'pc_triangle', melody: 'lead', counter: 'counterline', accent: 'ac_phrase' },
+    band: [['Violin', 'fiddle', 'melody'], ['Piano', 'grand_piano', 'chords', 'stride'], ['Basses', 'pizzicato', 'bass', 'tuba', { reg: -1 }],
+      ['Strings pad', 'slow_strings', 'pad', 'hold', {}, { vol: 0.4 }, 0.5], ['Flute line', 'flute', 'counter', 'counterline', {}, { vol: 0.4 }, 0.55]]
+  });
+  g('march', {
+    name: 'March', desc: 'proud parade, royal guard', tempo: 116, meter: '4/4', swing: 0, key: 'Bb', scale: 'major', prog: 'march', speed: 1,
+    color: 0.15, variety: 0.4, tune: 'heroic', energy: 0.6, space: 0.4, bright: 0.65, kit: 'orchestral',
+    tech: { chords: { Brass: 'stabs', Keys: 'stride', _: 'stride' }, bass: 'tuba', arp: 'arp_updown', pad: 'hold', drums: 'dr_march', perc: 'pc_triangle', melody: 'lead', counter: 'unison', accent: 'ac_phrase' },
+    band: [['Trumpet', 'trumpet', 'melody'], ['Brass chords', 'brass', 'chords', 'stride', {}, { vol: 0.55 }], ['Tuba', 'tuba', 'bass', 'tuba'],
+      ['Snare and bass drum', 'drums:orchestral', 'drums', 'dr_march'], ['Glockenspiel', 'glockenspiel', 'counter', 'unison', {}, { vol: 0.35 }, 0.5]]
+  });
+  g('eastern', {
+    name: 'East Asian', desc: 'pentatonic shrine, bamboo forest, temple', tempo: 84, meter: '4/4', swing: 0, key: 'D', scale: 'major_pent', prog: 'sway', speed: 2,
+    color: 0.2, variety: 0.4, tune: 'lyrical', energy: 0.4, space: 0.55, bright: 0.55, kit: 'taiko',
+    tech: { chords: { Plucked: 'fingerpick', _: 'hold' }, bass: 'bass_hold', arp: 'arp_updown', pad: 'drone', drums: 'dr_tribal', perc: 'pc_taiko', melody: 'ornate', counter: 'answer', accent: 'ac_bell' },
+    band: [['Shakuhachi', 'shakuhachi', 'melody', 'ornate'], ['Koto', 'koto', 'arp', 'arp_updown', { busy: 0.45 }], ['Shamisen answers', 'shamisen', 'counter', 'answer', {}, { vol: 0.5 }],
+      ['Drone', 'drone_pad', 'pad', 'drone', {}, { vol: 0.35 }], ['Taiko', 'drums:taiko', 'perc', 'pc_taiko', { busy: 0.3 }, { vol: 0.6 }, 0.45]]
+  });
+  g('desert', {
+    name: 'Desert', desc: 'Middle-Eastern sands, bazaar, ancient ruins', tempo: 96, meter: '4/4', swing: 0, key: 'E', scale: 'phrygian_dominant', prog: 'mystery', speed: 1,
+    color: 0.1, variety: 0.4, tune: 'dance', energy: 0.5, space: 0.5, bright: 0.55, kit: 'folk',
+    tech: { chords: { Plucked: 'fingerpick', _: 'hold' }, bass: 'pedal', arp: 'arp_updown', pad: 'drone', drums: 'dr_tribal', perc: 'pc_hand', melody: 'ornate', counter: 'answer', accent: 'ac_phrase' },
+    band: [['Reed flute', 'shakuhachi', 'melody', 'ornate'], ['Plucked strings', 'sitar', 'arp', 'arp_updown', { busy: 0.55 }], ['Hand drums', 'drums:folk', 'perc', 'pc_hand'],
+      ['Drone', 'drone_pad', 'pad', 'drone', {}, { vol: 0.4 }], ['Low pedal', 'pluck_bass', 'bass', 'pedal', {}, { vol: 0.6 }]]
+  });
+
+  K.GENRES = G;
+  K.GENRE_ORDER = Object.keys(G);
+
+  // pick the playing technique for an instrument whose technique is "Auto"
+  K.autoTechnique = function (role, sound, genre, meter) {
+    var T = K.TECH, gd = G[genre], fam = sound === 'drums' ? 'Drums' : (DM.PRESETS[sound] && DM.PRESETS[sound].family) || '_';
+    var pick = null;
+    if (gd && gd.tech && gd.tech[role]) {
+      var t = gd.tech[role];
+      pick = typeof t === 'string' ? t : (t[sound] || t[fam] || t._ || null);
+    }
+    var ok = function (id) { return id && T[id] && T[id].roles.indexOf(role) >= 0; };
+    if (ok(pick)) {
+      // a guitar technique on a sound that cannot strum, etc.: keep it only if the sound suits it or it is generic
+      var suits = K.techniqueSuits(role, sound);
+      if (suits.indexOf(pick) >= 0 || role === 'drums' || role === 'perc' || role === 'melody' || role === 'counter' || role === 'pad' || role === 'accent') return pick;
+      if (role === 'bass' || role === 'arp') return pick;
+      return suits[0] || pick;
+    }
+    var s = K.techniqueSuits(role, sound);
+    return s[0] || 'hold';
+  };
+}),
+(function (DM) {
+  'use strict';
+  var K = DM.K, H = DM.H = {};
+  var MAJ = [0, 2, 4, 5, 7, 9, 11];
+  function mod12(x) { return ((x % 12) + 12) % 12; }
+  function rngFor(seed, label) { return new DM.Rng(DM.hashString(String(seed) + ':' + label)); }
+  H.rngFor = rngFor;
+  H.mod12 = mod12;
+
+  // ---------------------------------------------------------------- scale context
+  H.scaleInfo = function (scaleId, keyPc) {
+    var sc = K.scale(scaleId);
+    var rel = sc.notes.slice(), mel = (sc.mel || sc.notes).slice();
+    var pcs = rel.map(function (x) { return mod12(keyPc + x); });
+    var melPcs = mel.map(function (x) { return mod12(keyPc + x); });
+    var set = {}, mset = {};
+    pcs.forEach(function (p) { set[p] = true; });
+    melPcs.forEach(function (p) { mset[p] = true; });
+    return { id: K.SCALES[scaleId] ? scaleId : 'major', keyPc: keyPc, rel: rel, pcs: pcs, mel: melPcs, inScale: set, inMel: mset,
+      minor: rel[2] === 3 || rel[1] === 1, blues: !!sc.blues, chromatic: !!sc.chromatic };
+  };
+
+  // ---------------------------------------------------------------- chords
+  var QN = { '0,4,7': '', '0,3,7': 'm', '0,3,6': 'dim', '0,4,8': 'aug', '0,4,7,11': 'maj7', '0,3,7,10': 'm7', '0,4,7,10': '7', '0,3,6,10': 'm7b5', '0,3,6,9': 'dim7',
+    '0,2,7': 'sus2', '0,5,7': 'sus4', '0,7': '5', '0,4,7,11,14': 'maj9', '0,3,7,10,14': 'm9', '0,4,7,10,14': '9', '0,4,7,14': 'add9', '0,3,7,14': 'madd9',
+    '0,4,7,9': '6', '0,3,7,9': 'm6', '0,5,7,10': '7sus4', '0,3,7,11': 'mmaj7', '0,4,8,10': 'aug7', '0,4,6,10': '7b5', '0,2,7,10': '7sus2', '0,4,8,11': 'maj7#5' };
+  H.chordName = function (root, ivs, bass) {
+    var q = QN[ivs.join(',')];
+    var s = DM.NOTE_NAMES[root] + (q == null ? '(' + ivs.join(' ') + ')' : q);
+    if (bass != null && bass !== root) s += '/' + DM.NOTE_NAMES[bass];
+    return s;
+  };
+  function mk(root, ivs, bass, sym, deg) {
+    ivs = ivs.slice().sort(function (a, b) { return a - b; }).filter(function (v, i, a) { return a.indexOf(v) === i; });
+    var pcs = ivs.map(function (i) { return mod12(root + i); });
+    return { root: root, ivs: ivs, pcs: pcs, bass: bass == null ? root : bass, sym: sym, deg: deg || 0, label: H.chordName(root, ivs, bass) };
+  }
+  H.makeChord = mk;
+  // stack thirds from the scale: degree index i in scale S.rel, k notes
+  function stack(S, i, k) {
+    var r = S.rel, n = r.length, out = [0];
+    for (var j = 1; j < k; j++) {
+      var idx = i + 2 * j;
+      var v = r[idx % n] + 12 * Math.floor(idx / n) - r[i];
+      out.push(v);
+    }
+    return out;
+  }
+  function degIndex(S, deg) {
+    // scales with 7 notes: direct; others: the note closest to the major-scale degree
+    if (S.rel.length === 7) return deg - 1;
+    var want = MAJ[deg - 1], best = 0, bd = 99;
+    S.rel.forEach(function (v, i) { var d = Math.abs(v - want); if (d < bd || (d === bd && v < want)) { bd = d; best = i; } });
+    return best;
+  }
+  var RN = { I: 1, II: 2, III: 3, IV: 4, V: 5, VI: 6, VII: 7 };
+  var ROMAN_RE = /^([b#]?)(VII|VI|IV|V|III|II|I|vii|vi|iv|v|iii|ii|i)(.*)$/;
+  // Parse one chord symbol in the scale context. Roman numerals adapt to the scale; absolute names
+  // (Am, F#m7, C/E) stay as written. Returns null for rests ("-", "N.C.").
+  H.parseChord = function (sym, S) {
+    sym = String(sym).trim();
+    if (!sym || sym === '-' || sym === 'N.C.' || sym === 'r') return null;
+    var bassSpec = null, sec = null, slash = sym.indexOf('/');
+    if (slash > 0) {
+      var after = sym.slice(slash + 1);
+      if (/^[b#]?(VII|VI|IV|V|III|II|I|vii|vi|iv|v|iii|ii|i)$/.test(after)) sec = after; else bassSpec = after;
+      sym = sym.slice(0, slash);
+    }
+    var m = ROMAN_RE.exec(sym);
+    if (!m) {
+      // absolute chord via the classic parser
+      var ab = DM.parseChord(sym + (bassSpec ? '/' + bassSpec : ''), S.keyPc, S.rel.length === 7 ? S.rel : MAJ);
+      if (!ab) return null;
+      return mk(ab.root, ab.tones, ab.bass, sym, 0);
+    }
+    var acc = m[1] === 'b' ? -1 : m[1] === '#' ? 1 : 0, numeral = m[2], upper = numeral === numeral.toUpperCase();
+    var deg = RN[numeral.toUpperCase()], suf = m[3] || '';
+    var root, ivs, explicitQ = null;
+    var ctx = S;
+    if (sec) {
+      // secondary chord: built on the target degree as a temporary major key (V/V = dominant of the dominant)
+      var tgt = H.parseChord(sec, S);
+      if (!tgt) return null;
+      ctx = H.scaleInfo('major', tgt.root);
+    }
+    if (acc !== 0) {
+      root = mod12(ctx.keyPc + MAJ[deg - 1] + acc);
+      ivs = upper ? [0, 4, 7] : [0, 3, 7];
+    } else {
+      var di = degIndex(ctx, deg);
+      root = mod12(ctx.keyPc + ctx.rel[di]);
+      ivs = stack(ctx, di, 3);
+      if (upper && deg === 5 && ivs[1] === 3) ivs[1] = 4; // V in minor = major V (strong cadence)
+      if (sec && deg === 5) ivs = [0, 4, 7];
+    }
+    var want7 = false, want9 = false;
+    var s2 = suf;
+    if (/^(maj7|M7|m7|7)/.test(s2)) { want7 = true; s2 = s2.replace(/^(maj7|M7|m7|7)/, ''); }
+    else if (/^(maj9|m9|9)/.test(s2)) { want7 = true; want9 = true; s2 = s2.replace(/^(maj9|m9|9)/, ''); }
+    if (/^m7b5/.test(suf)) { explicitQ = [0, 3, 6, 10]; }
+    else if (/^(dim7)/.test(suf)) explicitQ = [0, 3, 6, 9];
+    else if (/^(dim|°|o)/.test(suf)) explicitQ = [0, 3, 6];
+    else if (/^(aug|\+)/.test(suf)) explicitQ = [0, 4, 8];
+    else if (/^sus2/.test(suf)) explicitQ = [0, 2, 7];
+    else if (/^7sus4/.test(suf)) explicitQ = [0, 5, 7, 10];
+    else if (/^sus4|^sus/.test(suf)) explicitQ = [0, 5, 7];
+    else if (/^5/.test(suf)) explicitQ = [0, 7];
+    else if (/^add9/.test(suf)) { ivs = ivs.concat([14]); }
+    else if (/^6/.test(suf)) { ivs = ivs.concat([ivs[1] === 3 ? 9 : 9]); }
+    else if (/^m(?!aj)/.test(suf) && !want7) { ivs = [0, 3, ivs[2] === 6 ? 6 : 7]; }
+    if (explicitQ) ivs = explicitQ.slice();
+    if (want7 && !explicitQ) {
+      var sev;
+      if (S.blues || (acc !== 0 && upper) || sec || (upper && deg === 5)) sev = 10;
+      else if (acc === 0) { var st = stack(ctx, degIndex(ctx, deg), 4); sev = st[3]; }
+      else sev = 10;
+      ivs = ivs.slice(0, 3).concat([sev]);
+      if (want9) ivs.push(14);
+    }
+    var bass = root;
+    if (bassSpec) {
+      if (/^\d$/.test(bassSpec)) {
+        var bi = +bassSpec, ti = bi === 3 ? 1 : bi === 5 ? 2 : bi === 7 ? 3 : 0;
+        bass = mod12(root + (ivs[ti] != null ? ivs[ti] : 0));
+      } else {
+        try { bass = DM.parsePitchClass(bassSpec); } catch (e) { bass = root; }
+      }
+    }
+    var ch = mk(root, ivs, bass, sym + (sec ? '/' + sec : bassSpec ? '/' + bassSpec : ''), acc === 0 && !sec ? deg : 0);
+    ch.explicit = !!(suf || sec);
+    return ch;
+  };
+
+  // richer colours (7ths, 9ths) by the style's "chord colour" amount
+  H.colorChord = function (ch, color, S) {
+    if (!ch || ch.explicit || color < 0.3) return ch;
+    var ivs = ch.ivs.slice(0, 3);
+    if (ivs.length < 3 || ivs[2] === 8) return ch;
+    var third = ivs[1], fifth = ivs[2];
+    var dim = third === 3 && fifth === 6;
+    if (dim && color < 0.55) return ch;
+    // diatonic 7th when the root sits in the scale, else a soft choice
+    var sev = null, ri = S.rel.indexOf(mod12(ch.root - S.keyPc));
+    if (ri >= 0 && S.rel.length === 7) sev = stack(S, ri, 4)[3];
+    if (sev == null) sev = third === 4 ? 11 : 10;
+    if (third === 4 && sev === 10 && ch.deg !== 5 && ch.deg !== 0 && !S.blues && color < 0.55) sev = null; // keep dominant 7ths for V
+    if (third === 3 && sev === 11) sev = null; // minor-major 7th (harmonic minor tonic) sounds harsh; keep the plain triad
+    if (sev != null) ivs.push(sev);
+    if (color >= 0.62 && ivs.length === 4) {
+      var nine = ri >= 0 && S.rel.length === 7 ? stack(S, ri, 5)[4] : 14;
+      if (nine === 14 && !dim) ivs.push(14);
+    }
+    var out = mk(ch.root, ivs, ch.bass, ch.sym, ch.deg);
+    out.explicit = false;
+    return out;
+  };
+
+  // progression tokens: "I V vi IV", "Am F C G", "I:2 IV V:0.5"; returns [{sym, bars}]
+  H.progression = function (chords) {
+    var src = (chords && chords.custom && String(chords.custom).trim()) ||
+      (K.PROGRESSIONS[chords && chords.progression] || K.PROGRESSIONS.pop).chords;
+    var speed = chords && chords.speed > 0 ? chords.speed : 1;
+    var out = [];
+    String(src).split(/[\s,|]+/).forEach(function (tok) {
+      if (!tok) return;
+      var p = tok.split(':'), bars = p[1] != null ? parseFloat(p[1]) : 1;
+      if (!(bars > 0)) bars = 1;
+      out.push({ sym: p[0], bars: bars * speed });
+    });
+    if (!out.length) out.push({ sym: 'I', bars: speed });
+    return out;
+  };
+  // validate a custom chord string; returns {ok, chords:[labels], bad:[tokens]}
+  H.checkProgression = function (text, scaleId, key) {
+    var S = H.scaleInfo(scaleId || 'major', DM.parsePitchClass(key || 'C')), bad = [], labels = [];
+    H.progression({ custom: text, speed: 1 }).forEach(function (c) {
+      var ch = null;
+      try { ch = H.parseChord(c.sym, S); } catch (e) { ch = null; }
+      if (!ch && c.sym !== '-') bad.push(c.sym); else labels.push(ch ? ch.label : '-');
+    });
+    return { ok: !bad.length, chords: labels, bad: bad };
+  };
+
+  var SUBS = { 1: [6, 3], 2: [4], 3: [1], 4: [2, 6], 5: [5], 6: [4, 1], 7: [5] };
+  var ROMANS = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII'];
+  // Chords for one section. type 'A' = main, 'B' = contrast (progression rotated, ends on a half cadence).
+  // Returns {bars, chords:[{t, len (beats), sym, ch}]}
+  H.planSection = function (o) {
+    var prog = o.prog, bpb = o.bpb, S = o.S, variety = o.variety || 0, color = o.color || 0;
+    var L = 0;
+    prog.forEach(function (c) { L += c.bars; });
+    var secBars = L >= 8 ? Math.ceil(L) : L * Math.ceil(8 / L);
+    secBars = Math.max(4, Math.min(32, Math.round(secBars)));
+    var rg = rngFor(o.seed, 'sec:' + o.index + ':' + o.type);
+    var seq = prog.slice();
+    if (o.type === 'B' && seq.length >= 2) {
+      var rot = Math.floor(seq.length / 2);
+      seq = seq.slice(rot).concat(seq.slice(0, rot));
+    }
+    var list = [], t = 0, total = secBars * bpb, i = 0, guard = 0;
+    while (t < total - 1e-9 && guard++ < 512) {
+      var c = seq[i % seq.length], len = Math.min(c.bars * bpb, total - t), sym = c.sym;
+      // live variety: occasional substitutions (never on the first chord of the section)
+      if (variety > 0 && t > 0 && /^(VII|VI|IV|V|III|II|I|vii|vi|iv|v|iii|ii|i)(7|maj7|m7)?$/.test(sym) && rg.next() < variety * 0.28) {
+        var dm = /^(VII|VI|IV|V|III|II|I|vii|vi|iv|v|iii|ii|i)/.exec(sym)[1], d = RN[dm.toUpperCase()];
+        var alts = SUBS[d];
+        if (alts) { var nd = alts[Math.floor(rg.next() * alts.length)]; sym = (dm === dm.toUpperCase() ? ROMANS[nd - 1] : ROMANS[nd - 1].toLowerCase()) + sym.slice(dm.length); }
+      }
+      list.push({ t: t, len: len, sym: sym });
+      t += len; i++;
+    }
+    // cadence: the last chord of the section leans home (A) or stays open (B)
+    var last = list[list.length - 1];
+    var wantTurn = rg.next() < 0.25 + variety * 0.6;
+    if (last && wantTurn && last.len >= bpb - 1e-9 && !/^(V|v|VII|vii|bVII)/.test(last.sym)) {
+      var half = last.len / 2;
+      last.len = half;
+      list.push({ t: last.t + half, len: half, sym: color >= 0.4 ? 'V7' : 'V' });
+    }
+    list.forEach(function (c) {
+      var ch = null;
+      try { ch = H.parseChord(c.sym, S); } catch (e) { ch = null; }
+      if (!ch) ch = H.parseChord('I', S);
+      c.ch = H.colorChord(ch, color, S);
+    });
+    return { bars: secBars, chords: list };
+  };
+  H.chordAt = function (plan, t) {
+    var cs = plan.chords;
+    for (var i = cs.length - 1; i >= 0; i--) if (t >= cs[i].t - 1e-9) return cs[i];
+    return cs[0];
+  };
+
+  // ---------------------------------------------------------------- voicings
+  function place(pc, center) {
+    var m = center - 6 + mod12(pc - (center - 6));
+    return m;
+  }
+  function fit(m, lo, hi) {
+    while (m < lo) m += 12;
+    while (m > hi) m -= 12;
+    if (m < lo) m = lo;
+    return m;
+  }
+  H.fit = fit;
+  // close-position voicing around `center`, voice-led from `prev`
+  function closeVoicing(pcs, center, prev, maxN) {
+    pcs = pcs.slice();
+    if (pcs.length > maxN) pcs.splice(2, 1);          // drop the fifth first
+    if (pcs.length > maxN) pcs = pcs.slice(0, maxN);
+    var opts = pcs.map(function (pc) {
+      var a = [];
+      for (var m = center - 9; m <= center + 11; m++) if (mod12(m) === pc) a.push(m);
+      return a;
+    });
+    var best = null, bs = 1e9;
+    (function rec(i, acc) {
+      if (i === opts.length) {
+        var s = acc.slice().sort(function (a, b) { return a - b; }), cost = 0, k;
+        for (k = 1; k < s.length; k++) { var gp = s[k] - s[k - 1]; if (gp < 2) cost += 14; else if (gp === 2) cost += 1.5; }
+        var span = s[s.length - 1] - s[0];
+        if (span > 12) cost += (span - 12) * 2;
+        if (prev && prev.length) {
+          var p = prev.slice().sort(function (a, b) { return a - b; });
+          for (k = 0; k < Math.min(p.length, s.length); k++) cost += Math.abs(s[k] - p[k]) * 0.7;
+        } else cost += Math.abs((s[0] + s[s.length - 1]) / 2 - center);
+        if (cost < bs) { bs = cost; best = s; }
+        return;
+      }
+      for (var j = 0; j < opts[i].length; j++) rec(i + 1, acc.concat([opts[i][j]]));
+    })(0, []);
+    return best || pcs.map(function (pc) { return place(pc, center); }).sort(function (a, b) { return a - b; });
+  }
+  // upper-structure pcs: chord tones without the bass, guide tones first
+  function upperPcs(ch) {
+    var pcs = ch.pcs.filter(function (p) { return p !== ch.bass; });
+    return pcs.length ? pcs : ch.pcs.slice();
+  }
+  // kind: close, closeLow, closeHigh, open, piano, broken, guitar, guitar4, fingerpick, shell, power, high, ladder, ostinato
+  // returns { notes:[...ascending], bass: midi, ladder:[...] } within [lo, hi]
+  H.voice = function (ch, kind, center, o) {
+    o = o || {};
+    var lo = o.lo == null ? 24 : o.lo, hi = o.hi == null ? 108 : o.hi, maxN = o.max || 4, prev = o.prev || null;
+    var bassLo = Math.max(lo, 28), bass = fit(place(ch.bass, center - 17), bassLo, Math.max(bassLo + 11, Math.min(hi, 55)));
+    var notes, ladder;
+    var fifthPc = mod12(ch.root + (ch.ivs.indexOf(7) >= 0 ? 7 : ch.ivs[2] != null ? ch.ivs[2] : 7));
+    switch (kind) {
+      case 'closeLow': notes = closeVoicing(ch.pcs, center - 7, prev, Math.min(maxN, 3)); break;
+      case 'closeHigh': notes = closeVoicing(ch.pcs, center + 5, prev, Math.min(maxN, 3)); break;
+      case 'high': notes = closeVoicing(ch.pcs, center + 12, prev, Math.min(maxN, 3)); break;
+      case 'open': {
+        var up = closeVoicing(upperPcs(ch), center + 2, prev && prev.slice(1), Math.min(maxN - 1, 3));
+        var b = fit(place(ch.bass, center - 12), lo, hi);
+        while (b > up[0] - 3) b -= 12;
+        notes = [b].concat(up);
+        break;
+      }
+      case 'piano': case 'broken': {
+        var rh = closeVoicing(upperPcs(ch), center + 3, prev && prev.slice(1), Math.min(maxN - 1, 3));
+        var lb = fit(place(ch.bass, center - 19), Math.max(lo, 33), 55);
+        notes = [lb].concat(rh);
+        if (kind === 'broken') {
+          var f = lb + mod12(fifthPc - ch.bass);
+          if (f === lb) f += 7;
+          ladder = [lb, f, lb + 12].concat(rh.filter(function (x) { return x > lb + 12; }));
+          var top = ladder[ladder.length - 1];
+          rh.forEach(function (x) { if (x + 12 > top && ladder.length < 7) ladder.push(x + 12); });
+          ladder.sort(function (a, b2) { return a - b2; });
+        }
+        break;
+      }
+      case 'guitar': case 'guitar4': {
+        var gb = fit(place(ch.bass, 46), 40, 52);
+        notes = [gb];
+        var want = kind === 'guitar4' ? 4 : Math.min(6, Math.max(4, maxN));
+        var cur = gb, guard = 0;
+        var cyc = ch.pcs.slice();
+        while (notes.length < want && guard++ < 40) {
+          var bestM = null;
+          for (var m2 = cur + 3; m2 <= cur + 9; m2++) if (cyc.indexOf(mod12(m2)) >= 0) { bestM = m2; break; }
+          if (bestM == null || bestM > 72) break;
+          notes.push(bestM); cur = bestM;
+        }
+        if (kind === 'guitar4' && notes.length > 1 && notes[1] - notes[0] < 7) notes.splice(1, 1, notes[1] + 12 > 70 ? notes[1] : notes[1]);
+        break;
+      }
+      case 'fingerpick': {
+        var fb = fit(place(ch.bass, 46), 40, 52);
+        var ff = fb + mod12(fifthPc - ch.bass); if (ff === fb) ff += 7; if (ff > fb + 8) ff -= 12; if (ff < 40) ff += 12;
+        var mids = closeVoicing(upperPcs(ch), 60, prev && prev.slice(2), 2);
+        var hiR = fit(place(ch.root, 67), 62, 72), hi3 = fit(place(ch.pcs[1] != null ? ch.pcs[1] : ch.root, 70), 64, 76);
+        ladder = [fb, ff, mids[0], mids[1] != null ? mids[1] : mids[0] + 4, hiR, hi3];
+        notes = ladder.slice();
+        break;
+      }
+      case 'shell': {
+        var r0 = fit(place(ch.root, 50), 45, 55);
+        var third = ch.ivs[1] != null ? ch.ivs[1] : 4, sev = ch.ivs[3] != null ? ch.ivs[3] : (third === 3 ? 10 : 9);
+        var top3 = closeVoicing([mod12(ch.root + third), mod12(ch.root + sev)].concat(ch.ivs.indexOf(14) >= 0 ? [mod12(ch.root + 2)] : [mod12(ch.root + 7)]), 62, prev && prev.slice(1), 3);
+        notes = [r0].concat(top3);
+        break;
+      }
+      case 'power': {
+        var pr = fit(place(ch.root, 45), 40, 52);
+        notes = [pr, pr + 7, pr + 12];
+        break;
+      }
+      case 'ostinato': {
+        var orr = fit(place(ch.root, center - 5), lo, hi);
+        ladder = [orr, orr + 12, orr + 7];
+        notes = [orr];
+        break;
+      }
+      case 'ladder': {
+        var start = center - 7, l = [];
+        for (var mm = start; mm < start + 36 && l.length < 9; mm++) if (ch.pcs.indexOf(mod12(mm)) >= 0) l.push(mm);
+        ladder = l;
+        notes = l.slice(0, 4);
+        break;
+      }
+      default: notes = closeVoicing(ch.pcs, center, prev, maxN);
+    }
+    var clampAll = function (arr) { return arr.map(function (x) { return fit(x, lo, hi); }); };
+    notes = clampAll(notes).sort(function (a, b3) { return a - b3; }).filter(function (v, i, a) { return a.indexOf(v) === i; });
+    if (ladder) ladder = clampAll(ladder);
+    return { notes: notes, bass: fit(bass, lo, hi), ladder: ladder || notes };
+  };
+
+  // ---------------------------------------------------------------- the tune (theme)
+  function cellsFor(tune, meter) {
+    var c = tune.cells[meter];
+    if (c) return c;
+    if (meter === '12/8' && tune.cells['6/8']) {
+      var six = tune.cells['6/8'], out = [];
+      for (var i = 0; i < six.length; i++) out.push(six[i].concat(six[(i + 1) % six.length]));
+      return out;
+    }
+    if (meter === '2/4') return tune.cells['4/4'].map(function (cell) { return cell.map(function (d) { return d / 2; }); });
+    return tune.cells['4/4'];
+  }
+  function isStrong(t, d, bpb, sub) {
+    var b = t - Math.floor(t / bpb) * bpb;
+    if (Math.abs(b) < 1e-6) return true;
+    if (d >= 1.5 - 1e-6) return true;
+    if (bpb === 4 && Math.abs(b - 2) < 1e-6) return true;
+    if (sub === 3 && Math.abs(b - Math.round(b)) < 1e-6 && d >= 0.6) return true;
+    return false;
+  }
+  function scaleNotesIn(lo, hi, pcsSet) {
+    var out = [];
+    for (var m = lo; m <= hi; m++) if (pcsSet[mod12(m)]) out.push(m);
+    return out;
+  }
+  function stepFrom(m, steps, scaleNotes) {
+    var i = scaleNotes.indexOf(m);
+    if (i < 0) { // snap to nearest scale note
+      var best = 0, bd = 99;
+      scaleNotes.forEach(function (x, j) { var dd = Math.abs(x - m); if (dd < bd) { bd = dd; best = j; } });
+      i = best;
+    }
+    var j2 = Math.max(0, Math.min(scaleNotes.length - 1, i + steps));
+    return scaleNotes[j2];
+  }
+  // pick weighted by exp(score / temp)
+  function choose(rg, cands, temp) {
+    cands.sort(function (a, b) { return b.s - a.s; });
+    var top = cands.slice(0, 5), w = top.map(function (c) { return Math.exp((c.s - top[0].s) / Math.max(0.15, temp)); });
+    return top[rg.weighted(w)].m;
+  }
+
+  // Build the tune for one section. o: {plan, S, tune (K.TUNES entry), meter, bpb, sub, seed, type, index}
+  // Returns [{t, d, m, v, strong}] with t in beats from the section start.
+  H.makeTheme = function (o) {
+    var plan = o.plan, S = o.S, tune = o.tune || K.TUNES.lyrical, bpb = o.bpb, sub = o.sub || 2;
+    var bars = plan.bars, phraseLen = bars % 4 === 0 ? 4 : bars, nPhr = Math.max(1, Math.round(bars / phraseLen));
+    var cells = cellsFor(tune, o.meter);
+    var rg = rngFor(o.seed, 'theme:' + o.type);
+    var w = cells.map(function (c, i) { return i < 3 ? 2 : 1; });
+    var m1 = rg.weighted(w), m2 = rg.weighted(w), m4 = rg.weighted(w), guard = 0;
+    while (m2 === m1 && cells.length > 1 && guard++ < 8) m2 = rg.weighted(w);
+    guard = 0;
+    while ((m4 === m1 || m4 === m2) && cells.length > 2 && guard++ < 8) m4 = rg.weighted(w);
+    var cad = [bpb], cadOpen = bpb >= 3 ? [bpb / 2, bpb / 2] : [bpb];
+    if (tune === K.TUNES.gentle || tune === K.TUNES.ambient) cad = [bpb * 0.75, -bpb * 0.25];
+    // rhythm plan per phrase
+    var rhythm = [];
+    for (var p = 0; p < nPhr; p++) {
+      var final = p === nPhr - 1 || p % 2 === 1;
+      for (var b = 0; b < phraseLen; b++) {
+        var cell;
+        if (b === phraseLen - 1) cell = final ? cad : (rg.next() < 0.5 ? cadOpen : cells[m2]);
+        else if (b === 0) cell = cells[m1];
+        else if (b === 1) cell = cells[m2];
+        else if (p % 2 === 1 && b === 2) cell = cells[m4];
+        else cell = cells[m1];
+        if (tune.riff && b !== phraseLen - 1) cell = cells[m1];
+        rhythm.push(cell);
+      }
+    }
+    // notes with times
+    var notes = [];
+    rhythm.forEach(function (cell, bi) {
+      var t = bi * bpb, sum = 0;
+      cell.forEach(function (d) { sum += Math.abs(d); });
+      var scale = sum > 0 ? bpb / sum : 1;
+      cell.forEach(function (d) {
+        var dd = Math.abs(d) * scale;
+        if (d > 0) notes.push({ t: t, d: dd, bar: bi, phrase: Math.floor(bi / phraseLen) });
+        t += dd;
+      });
+    });
+    if (!notes.length) return [];
+    // register
+    var tonic = 60 + mod12(S.keyPc - 60);
+    if (tonic < 60) tonic += 12;
+    var span = tune.span || 12, lo = tonic - 5, hi = tonic + span;
+    if (o.type === 'B') { lo += 2; hi += 3; }
+    var melSet = S.chromatic ? S.inScale : S.inMel;
+    var melNotes = scaleNotesIn(lo - 2, hi + 2, melSet);
+    var allMel = scaleNotesIn(lo - 2, hi + 2, S.inMel);
+    // skeleton (strong) notes
+    notes.forEach(function (n) { n.strong = isStrong(n.t, n.d, bpb, sub); });
+    if (!notes.some(function (n) { return n.strong; })) notes[0].strong = true;
+    var prev = null, prevI = 0;
+    var center = tonic + Math.round(span * 0.25);
+    notes.forEach(function (n, idx) {
+      if (!n.strong) return;
+      var c = H.chordAt(plan, n.t).ch, cps = {};
+      c.pcs.forEach(function (pc) { cps[pc] = true; });
+      var pIn = n.t - n.phrase * phraseLen * bpb, u = pIn / (phraseLen * bpb);
+      var peak = center + span * 0.4 + (o.type === 'B' ? 2 : 0);
+      var finalPhrase = n.phrase === nPhr - 1 || n.phrase % 2 === 1;
+      var isLast = idx === notes.length - 1 || notes[idx + 1].phrase !== n.phrase;
+      var target = u < 0.6 ? center + (peak - center) * Math.sin(Math.PI / 2 * u / 0.6) : peak - (peak - (finalPhrase ? tonic + 0 : center)) * Math.sin(Math.PI / 2 * (u - 0.6) / 0.4);
+      var cands = [];
+      melNotes.forEach(function (m) {
+        var pc = mod12(m), s = 0;
+        if (!S.inMel[pc] && !cps[pc]) return;
+        s += cps[pc] ? 3 : -2.2;
+        s -= Math.abs(m - target) * 0.22;
+        if (prev != null) {
+          var iv = Math.abs(m - prev);
+          if (iv === 0) s -= 1.4; else if (iv <= 2) s += 1.6 * tune.step; else if (iv <= 4) s += 1.0; else if (iv <= tune.leap) s += 0.2; else s -= 2.5;
+          if (iv === 6) s -= 1.5;
+          if (prevI && Math.abs(prevI) >= 5 && (m - prev) * prevI > 0) s -= 1.5;
+        }
+        if (isLast) {
+          if (finalPhrase) s += pc === S.keyPc ? 6 : -3;
+          else s += (pc === mod12(S.keyPc + 7) || pc === mod12(S.keyPc + 2) || pc === mod12(S.keyPc + (S.minor ? 3 : 4))) ? 2.5 : pc === S.keyPc ? -2 : 0;
+        }
+        if (m < lo || m > hi) s -= 2;
+        cands.push({ m: m, s: s });
+      });
+      if (!cands.length) cands.push({ m: fit(place(c.root, target), lo, hi), s: 0 });
+      n.m = choose(rg, cands, tune.temp || 0.6);
+      if (prev != null) prevI = n.m - prev;
+      prev = n.m;
+    });
+    // weak notes: connect the skeleton
+    var fw = tune.fill, fillKeys = ['pass', 'nb', 'skip', 'rep'], fillW = fillKeys.map(function (k) { return fw[k] || 0; });
+    var i = 0;
+    while (i < notes.length) {
+      if (notes[i].strong) { i++; continue; }
+      var j = i;
+      while (j < notes.length && !notes[j].strong) j++;
+      var A = i > 0 ? notes[i - 1].m : null, B = j < notes.length ? notes[j].m : null;
+      if (A == null) A = B != null ? stepFrom(B, -1, allMel) : center;
+      if (B == null) B = A;
+      var k = j - i, kind = fillKeys[rg.weighted(fillW)];
+      var dirn = B > A ? 1 : B < A ? -1 : (rg.next() < 0.5 ? 1 : -1);
+      for (var q = 0; q < k; q++) {
+        var n2 = notes[i + q], ch2 = H.chordAt(plan, n2.t).ch, m;
+        if (kind === 'pass') m = stepFrom(A, dirn * (q + 1), allMel);
+        else if (kind === 'nb') m = q % 2 === 0 ? stepFrom(A, dirn > 0 ? 1 : -1, allMel) : A;
+        else if (kind === 'skip') {
+          var tones = [];
+          for (var mm = Math.min(A, B) - 5; mm <= Math.max(A, B) + 5; mm++) if (ch2.pcs.indexOf(mod12(mm)) >= 0 && S.inMel[mod12(mm)] !== undefined) tones.push(mm);
+          if (!tones.length) tones = [A];
+          var pos = dirn > 0 ? tones.filter(function (x) { return x > A; }) : tones.filter(function (x) { return x < A; }).reverse();
+          m = pos[q] != null ? pos[q] : tones[Math.floor(rg.next() * tones.length)];
+        } else m = A;
+        if (m === B && q === k - 1 && kind !== 'rep') m = stepFrom(B, -dirn, allMel);
+        if (!S.inMel[mod12(m)] && !S.chromatic) m = stepFrom(m, 0, allMel);
+        n2.m = fit(m, lo - 2, hi + 2);
+      }
+      // jazzy / mysterious: a chromatic approach into the next strong note
+      if (tune.chromatic && j < notes.length && rg.next() < tune.chromatic) notes[j - 1].m = notes[j].m - 1;
+      i = j;
+    }
+    // sequence: bar 3 of a phrase repeats bar 1 moved to the new chord when it still fits
+    if (!tune.riff) {
+      for (var ph = 0; ph < nPhr; ph++) {
+        var b1 = ph * phraseLen, b3 = b1 + 2;
+        if (b3 >= bars || phraseLen < 4) continue;
+        var n1 = notes.filter(function (n) { return n.bar === b1; }), n3 = notes.filter(function (n) { return n.bar === b3; });
+        if (n1.length !== n3.length || !n1.length) continue;
+        var c1 = H.chordAt(plan, b1 * bpb).ch, c3 = H.chordAt(plan, b3 * bpb).ch;
+        var shift = allMel.indexOf(stepFrom(60 + mod12(c3.root - 60), 0, allMel)) - allMel.indexOf(stepFrom(60 + mod12(c1.root - 60), 0, allMel));
+        if (Math.abs(shift) > 4) continue;
+        var cand = n1.map(function (n) { return stepFrom(n.m, shift, allMel); });
+        var okCount = 0, strongCount = 0;
+        n3.forEach(function (n, x) { if (n.strong) { strongCount++; if (c3.pcs.indexOf(mod12(cand[x])) >= 0) okCount++; } });
+        if (strongCount && okCount >= strongCount - (strongCount > 2 ? 1 : 0) && rg.next() < 0.7) n3.forEach(function (n, x) { n.m = cand[x]; });
+      }
+    } else {
+      // riff: every bar replays bar 1's shape fitted to its chord
+      var first = notes.filter(function (n) { return n.bar === 0; });
+      var r0 = H.chordAt(plan, 0).ch.root;
+      notes.forEach(function (n) {
+        if (n.bar === 0 || n.bar % phraseLen === phraseLen - 1) return;
+        var src = first.filter(function (f) { return Math.abs((f.t) - (n.t - n.bar * bpb)) < 1e-6; })[0];
+        if (!src) return;
+        var cr = H.chordAt(plan, n.bar * bpb).ch.root, sh = mod12(cr - r0);
+        if (sh > 6) sh -= 12;
+        var m = src.m + sh;
+        if (!S.inMel[mod12(m)]) m = stepFrom(m, 0, allMel);
+        n.m = fit(m, lo - 2, hi + 2);
+      });
+    }
+    // dynamics: shape toward the phrase peak, strong notes a little louder
+    notes.forEach(function (n) {
+      var u = (n.t - n.phrase * phraseLen * bpb) / (phraseLen * bpb);
+      n.v = 0.62 + 0.14 * Math.sin(Math.PI * Math.min(1, u * 1.2)) + (n.strong ? 0.08 : 0);
+    });
+    return notes.map(function (n) { return { t: n.t, d: n.d, m: n.m, v: n.v, strong: n.strong }; });
+  };
+}),
+(function (DM) {
+  'use strict';
+  var K = DM.K, H = DM.H, P = DM.P = {};
+  var mod12 = H.mod12, fit = H.fit;
+  var parseCache = {};
+  function clamp01(x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
+
+  // "C-C-.." -> [{t, d, c}] over one bar of `beats`
+  function parse(str, beats) {
+    var key = str + '@' + beats, hit = parseCache[key];
+    if (hit) return hit;
+    var n = str.length, step = beats / n, out = [];
+    for (var i = 0; i < n; i++) {
+      var c = str[i];
+      if (c === '.' || c === '-' || c === ' ') continue;
+      var len = 1;
+      while (i + len < n && str[i + len] === '-') len++;
+      out.push({ t: i * step, d: len * step, c: c, step: step });
+    }
+    parseCache[key] = out;
+    return out;
+  }
+  P.parse = parse;
+  // a level may be: 'bar|bar' (cycles bar by bar), [alternatives] (random per bar), or a drum object
+  function variant(v, ctx, rg) {
+    if (Array.isArray(v)) v = v[Math.floor(rg.next() * v.length)];
+    if (typeof v === 'string' && v.indexOf('|') >= 0) { var parts = v.split('|'); v = parts[ctx.bar % parts.length]; }
+    return v;
+  }
+  function levelOf(levels, lv) {
+    if (!levels || !levels.length) return null;
+    var i = Math.min(levels.length - 1, Math.floor(lv * levels.length));
+    return levels[Math.max(0, i)];
+  }
+  // metric weight of a position inside the bar
+  function accent(t, bpb, sub) {
+    var fr = t - Math.floor(t + 1e-9);
+    if (fr < 1e-6) { var b = Math.round(t); return b === 0 ? 1 : (bpb === 4 && b === 2) ? 0.93 : 0.86; }
+    if (sub === 2 && Math.abs(fr - 0.5) < 1e-6) return 0.76;
+    if (sub === 3 && (Math.abs(fr - 1 / 3) < 1e-3 || Math.abs(fr - 2 / 3) < 1e-3)) return 0.74;
+    return 0.68;
+  }
+  P.accent = accent;
+  function chordAt(ctx, t) {
+    var cs = ctx.chords;
+    for (var i = cs.length - 1; i >= 0; i--) if (t >= cs[i].t - 1e-9) return cs[i];
+    return cs[0];
+  }
+  function chordAfter(ctx, t) {
+    var cs = ctx.chords;
+    for (var i = 0; i < cs.length; i++) if (cs[i].t > t + 1e-9) return cs[i].ch;
+    return ctx.next || cs[cs.length - 1].ch;
+  }
+  function scaleNotes(lo, hi, set) { var o = []; for (var m = lo; m <= hi; m++) if (set[mod12(m)]) o.push(m); return o; }
+  function stepIn(m, steps, notes) {
+    var i = notes.indexOf(m);
+    if (i < 0) { var bd = 99; notes.forEach(function (x, j) { if (Math.abs(x - m) < bd) { bd = Math.abs(x - m); i = j; } }); }
+    return notes[Math.max(0, Math.min(notes.length - 1, i + steps))];
+  }
+  function nearest(pc, ref, lo, hi) {
+    var best = null, bd = 99;
+    for (var m = lo; m <= hi; m++) if (mod12(m) === pc && Math.abs(m - ref) < bd) { bd = Math.abs(m - ref); best = m; }
+    return best == null ? fit(ref - mod12(ref - pc), lo, hi) : best;
+  }
+
+  // ---------------------------------------------------------------- common feel
+  // f: {busy, dyn, reg, len, expr, timing}; returns derived numbers for this bar
+  P.feel = function (f, ctx, inst, tech) {
+    var meta = K.soundMeta(inst.sound), E = ctx.energy;
+    var lv = clamp01(f.busy + (E - 0.5) * 0.6);
+    var base = Math.max(0.08, Math.min(1, (0.32 + 0.62 * f.dyn) * (0.7 + 0.45 * E)));
+    var role = inst.role, c0 = (K.ROLE_CENTER[role] || 60) + 12 * Math.round(f.reg || 0);
+    var lo = meta.lo, hi = meta.hi;
+    var center = hi - lo < 16 ? Math.round((lo + hi) / 2) : Math.max(lo + 7, Math.min(hi - 7, c0));
+    var lenF = (0.45 + 1.1 * f.len) * ((tech && tech.len) || 1);
+    return { lv: lv, base: base, center: center, lo: lo, hi: hi, lenF: lenF, meta: meta, E: E };
+  };
+
+  // ---------------------------------------------------------------- chords / arps (patterns)
+  function voicingFor(st, ch, kind, F, maxN, cacheKey) {
+    st.vcache = st.vcache || {};
+    var key = cacheKey + ch.label + ':' + kind + ':' + F.center;
+    if (st.vcache[key]) return st.vcache[key];
+    var v = H.voice(ch, kind, F.center, { lo: F.lo, hi: F.hi, max: maxN, prev: st.prevVoice });
+    st.prevVoice = v.notes;
+    st.vcache = {}; st.vcache[key] = v;
+    return v;
+  }
+  function genPattern(ctx, inst, st, tech, F, rg) {
+    var levels = K.patternFor(tech, ctx.meter);
+    var str = variant(levelOf(levels, F.lv), ctx, rg);
+    if (typeof str !== 'string') return [];
+    var evs = parse(str, ctx.bpb), out = [];
+    var kind = tech.voicing || 'close';
+    if (F.meta.guitar && (kind === 'piano' || kind === 'close') && tech.id !== 'stabs') kind = 'guitar';
+    var maxN = tech.notes || 4, strumMs = tech.strum || (F.meta.guitar ? 5 : 0);
+    var thin = F.lv < 0.12 ? 0.25 : 0;
+    evs.forEach(function (e) {
+      if (e.t < ctx.from - 1e-9) return;
+      if (thin && e.t % 1 > 1e-6 && rg.next() < thin) return;
+      var ce = chordAt(ctx, e.t), ch = ce.ch, v = voicingFor(st, ch, kind, F, maxN, '');
+      var notes, vel = F.base * accent(e.t, ctx.bpb, ctx.sub), d = e.d * F.lenF, strum = null;
+      var c = e.c;
+      if (c === 'C') notes = v.notes;
+      else if (c === 'H') notes = v.notes.length > 2 ? v.notes.slice(1) : v.notes;
+      else if (c === 'B') notes = [v.notes[0]];
+      else if (c === 'F') {
+        var b0 = v.notes[0], f = b0 + mod12(mod12(ch.root + 7) - mod12(b0));
+        if (f - b0 > 7) f -= 12;
+        if (f < F.lo) f += 12;
+        notes = [f];
+      } else if (c === 'D' || c === 'U') {
+        notes = c === 'U' ? v.notes.slice(-4) : v.notes;
+        strum = { dir: c === 'D' ? 1 : -1, ms: (strumMs || 10) * (0.6 + 0.8 * inst.feel.expr) };
+        if (c === 'U') vel *= 0.78;
+      } else if (c === 'P') notes = v.notes;
+      else if (c === 'x') { notes = v.notes.slice(-3); d = 0.06; vel *= 0.45; }
+      else if (c === 'r') { var lad = v.ladder; notes = [lad[Math.floor(rg.next() * lad.length)]]; }
+      else if (c >= '1' && c <= '9') {
+        var L = v.ladder, k = c.charCodeAt(0) - 49;
+        var m = L[k % L.length] + 12 * Math.floor(k / L.length);
+        notes = [fit(m, F.lo, F.hi)];
+      } else return;
+      if (tech.pedal) {
+        var chordEnd = ce.t + ce.len;
+        d = Math.max(d, Math.min(chordEnd, ctx.bpb + 0.5) - e.t);
+      }
+      if (!strum && notes.length > 2 && strumMs) strum = { dir: 1, ms: strumMs * 0.5 };
+      out.push({ t: e.t, d: Math.max(0.05, d), notes: notes, v: vel, strum: strum, over: tech.over || null });
+    });
+    return out;
+  }
+
+  // held chords: one event per chord (re-struck or rolled by instruments that cannot hold)
+  function genHold(ctx, inst, st, tech, F, rg) {
+    var out = [], kind = tech.voicing || 'open', maxN = tech.notes || 4;
+    if (F.meta.guitar) kind = 'guitar';
+    ctx.chords.forEach(function (ce) {
+      var starts = ce.t >= ctx.from - 1e-9 && ce.t < ctx.bpb - 1e-9;
+      var carried = ce.t < ctx.from - 1e-9 && (ctx.restart || st.lastHold !== ce.ch.label) && ce.t + ce.len > ctx.from + 1e-9;
+      var v = voicingFor(st, ce.ch, kind, F, maxN, 'h');
+      var t0 = starts ? ce.t : ctx.from;
+      var remain = ce.t + ce.len - t0;
+      if (!F.meta.sus) {
+        // decaying sounds: mallets roll, others re-strike once per bar inside the chord
+        if (F.meta.mallet) {
+          var endB = Math.min(ctx.bpb, ce.t + ce.len), step = 0.25;
+          for (var t = Math.max(t0, ctx.from), i = 0; t < endB - 1e-9; t += step, i++) {
+            var nn = v.notes.length > 1 ? [v.notes[v.notes.length - 1 - (i % 2)]] : v.notes;
+            out.push({ t: t, d: step * 1.5, notes: nn, v: F.base * (0.55 + 0.12 * (i % 2 === 0 ? 1 : 0) + 0.1 * rg.next()) });
+          }
+        } else if (starts || carried || Math.abs(ctx.from) < 1e-9) {
+          out.push({ t: t0, d: Math.min(remain, ctx.bpb * 2), notes: v.notes, v: F.base * 0.85, strum: { dir: 1, ms: 18 } });
+        }
+        return;
+      }
+      if (!starts && !carried) return;
+      var over = tech.over ? Object.assign({}, tech.over) : null;
+      if (tech.swell) {
+        var sec = remain * 60 / ctx.tempo;
+        over = over || {};
+        over.a = Math.min(4, Math.max(0.3, sec * 0.55)); over.attack = over.a; over.r = Math.max(0.6, sec * 0.3);
+      }
+      out.push({ t: t0, d: remain + 0.08, notes: v.notes, v: F.base * 0.82, over: over });
+      st.lastHold = ce.ch.label;
+    });
+    return out;
+  }
+
+  function genRoll(ctx, inst, st, tech, F, rg) {
+    var out = [], lv = F.lv;
+    ctx.chords.forEach(function (ce, ci) {
+      var times = [];
+      var a = Math.max(ce.t, 0), b = Math.min(ctx.bpb, ce.t + ce.len);
+      if (ce.t >= -1e-9 && ce.t >= ctx.from - 1e-9) times.push(ce.t);
+      else if (ci === 0 && (ctx.from > 0 || ctx.restart || lv >= 0.34)) times.push(ctx.from);
+      if (lv >= 0.67 && ctx.bpb >= 4 && 2 > a && 2 < b && 2 >= ctx.from) times.push(2);
+      times.forEach(function (t0) {
+        var v = H.voice(ce.ch, 'ladder', F.center - 7, { lo: F.lo, hi: F.hi });
+        var L = v.ladder.slice(0, 7), gap = 0.075;
+        L.forEach(function (m, k) {
+          out.push({ t: t0 + k * gap, d: Math.max(0.5, Math.min(ce.t + ce.len, ctx.bpb + 1) - t0), notes: [m], v: F.base * (0.6 + 0.4 * k / L.length) });
+        });
+      });
+    });
+    return out;
+  }
+
+  function genSparkle(ctx, inst, st, tech, F, rg) {
+    var out = [], step = ctx.sub === 3 ? 1 / 3 : 0.5, p = 0.07 + 0.3 * F.lv, last = -9;
+    for (var t = 0; t < ctx.bpb - 1e-9; t += step) {
+      if (t < ctx.from - 1e-9) continue;
+      if (rg.next() >= p || t - last < step * 1.5) continue;
+      var ce = chordAt(ctx, t), v = H.voice(ce.ch, 'ladder', F.center + 5, { lo: F.lo, hi: F.hi });
+      var L = v.ladder.slice(2);
+      if (!L.length) L = v.ladder;
+      out.push({ t: t, d: 1.5, notes: [L[Math.floor(rg.next() * L.length)]], v: F.base * (0.55 + 0.35 * rg.next()) });
+      last = t;
+    }
+    return out;
+  }
+
+  function genDrone(ctx, inst, st, tech, F) {
+    var need = ctx.restart || ctx.barInSec === 0 || st.droneKey !== ctx.keyPc;
+    if (!need) return [];
+    st.droneKey = ctx.keyPc;
+    var root = nearest(ctx.keyPc, F.center - 5, F.lo, F.hi), fifth = root + 7 <= F.hi ? root + 7 : root - 5;
+    var bars = Math.max(1, ctx.secBars - ctx.barInSec);
+    return [{ t: ctx.from, d: bars * ctx.bpb - ctx.from + 0.1, notes: [root, fifth].sort(function (a, b) { return a - b; }), v: F.base * 0.8 }];
+  }
+
+  // ---------------------------------------------------------------- bass
+  function genBass(ctx, inst, st, tech, F, rg) {
+    var levels = K.patternFor(tech, ctx.meter);
+    var str = variant(levelOf(levels, F.lv), ctx, rg);
+    if (typeof str !== 'string') return [];
+    var evs = parse(str, ctx.bpb), out = [];
+    var lo = Math.max(F.lo, 24), hi = Math.min(F.hi, 67);
+    var center = F.center;
+    var S = ctx.S, scale = scaleNotes(lo, hi, S.inScale);
+    var prev = st.lastBass == null ? center : st.lastBass;
+    evs.forEach(function (e, idx) {
+      if (e.t < ctx.from - 1e-9) return;
+      var ce = chordAt(ctx, e.t), ch = ce.ch, c = e.c, m, vel = F.base * accent(e.t, ctx.bpb, ctx.sub), d = e.d * F.lenF;
+      var rootM = nearest(ch.bass, e.t < 1e-6 || Math.abs(e.t - ce.t) < 1e-6 ? center : prev, lo, hi);
+      if (Math.abs(rootM - center) > 9) rootM = nearest(ch.bass, center, lo, hi);
+      var fifthPc = mod12(ch.root + (ch.ivs.indexOf(7) >= 0 ? 7 : (ch.ivs[2] || 7)));
+      switch (c) {
+        case 'R': m = rootM; break;
+        case 'L': m = rootM - 12 >= lo ? rootM - 12 : rootM; break;
+        case '8': m = rootM + 12 <= hi ? rootM + 12 : rootM; break;
+        case '5': m = nearest(fifthPc, rootM + 4, lo, hi); break;
+        case '3': m = nearest(ch.pcs[1] != null ? ch.pcs[1] : ch.root, rootM + 3, lo, hi); break;
+        case '7': m = nearest(mod12(ch.root + (ch.ivs[3] || 10)), rootM + 9, lo, hi); break;
+        case 'T': m = nearest(ctx.keyPc, center, lo, hi); break;
+        case 'g': m = rootM; vel *= 0.35; d = 0.1; break;
+        case 'A': {
+          var nx = chordAfter(ctx, e.t), target = nearest(nx.bass, prev, lo, hi);
+          if (nx.label === ch.label) { m = nearest(fifthPc, prev, lo, hi); break; }
+          if (rg.next() < 0.55) m = target + (prev > target ? 1 : -1);
+          else m = stepIn(target, prev > target ? 1 : -1, scale);
+          if (m === prev) m = target + (m > target ? -1 : 1);
+          break;
+        }
+        case 'W': {
+          var nxt = null;
+          for (var q = idx + 1; q < evs.length; q++) if (evs[q].c === 'R' || evs[q].c === 'A') { nxt = evs[q]; break; }
+          var tgtCh = nxt ? chordAt(ctx, nxt.t).ch : chordAfter(ctx, e.t), tgt = nearest(tgtCh.bass, prev, lo, hi);
+          var cands = [];
+          for (var mm = prev - 7; mm <= prev + 7; mm++) {
+            if (mm < lo || mm > hi || mm === prev) continue;
+            var pc = mod12(mm), sc = 0;
+            if (ch.pcs.indexOf(pc) >= 0) sc += 2; else if (S.inScale[pc]) sc += 0.6; else continue;
+            sc -= Math.abs(mm - prev) * 0.25;
+            sc -= Math.abs(Math.abs(tgt - mm) - 2) * 0.35;
+            cands.push({ m: mm, s: sc + rg.next() * 0.8 });
+          }
+          cands.sort(function (a, b) { return b.s - a.s; });
+          m = cands.length ? cands[0].m : rootM;
+          break;
+        }
+        default: return;
+      }
+      if (m == null) return;
+      m = fit(m, lo, hi);
+      var over = null;
+      if (tech.slide && st.lastBass != null && st.lastBass !== m && e.t > 0) over = { bend: Math.max(-12, Math.min(12, st.lastBass - m)), bendTime: 0.07 };
+      out.push({ t: e.t, d: Math.max(0.06, d), notes: [m], v: vel, over: over });
+      prev = m; st.lastBass = m;
+    });
+    return out;
+  }
+
+  // ---------------------------------------------------------------- tune players
+  function themeShift(ctx, center) {
+    var med = ctx.themeMedian == null ? 72 : ctx.themeMedian;
+    return 12 * Math.round((center - med) / 12);
+  }
+  function fold(m, lo, hi) { while (m < lo) m += 12; while (m > hi) m -= 12; return m; }
+  function genTheme(ctx, inst, st, tech, F, rg) {
+    var mode = tech.mode, out = [];
+    var notes = ctx.theme || [];
+    var sus = F.meta.sus, expr = inst.feel.expr;
+    var leadCenter = mode === 'unison' || mode === 'lowoct' ? Math.max(F.lo + 7, Math.min(F.hi - 7, K.ROLE_CENTER.melody + 12 * Math.round(inst.feel.reg || 0))) : F.center;
+    var shift = themeShift(ctx, leadCenter) + (mode === 'lowoct' ? -12 : 0);
+    var velK = (0.5 + 0.65 * inst.feel.dyn) * (0.78 + 0.35 * ctx.energy);
+    var parent = scaleNotes(24, 108, ctx.S.inScale), melS = scaleNotes(24, 108, ctx.S.inMel);
+    function legato(n) { return sus ? n.d * (0.88 + 0.22 * inst.feel.len) : n.d * (0.75 + 0.45 * inst.feel.len); }
+    function scoop(first) {
+      if (!(F.meta.breath || F.meta.mono) || expr < 0.25) return null;
+      return first && rg.next() < expr * 0.7 ? { bend: -1 * (0.5 + expr), bendTime: 0.05 + 0.08 * expr } : null;
+    }
+    if (mode === 'answer') return genAnswer(ctx, inst, st, F, rg, melS);
+    if (mode === 'line') return genLine(ctx, inst, st, F, rg);
+    if (!ctx.themeOn) return out;
+    var playBar = true;
+    if (mode === 'sparse') playBar = rg.next() < 0.3 + 0.6 * F.lv;
+    if (!playBar) return out;
+    var prevT = -9;
+    notes.forEach(function (n, i) {
+      if (n.t < ctx.from - 1e-9) return;
+      if (mode === 'sparse' && !n.strong && rg.next() > 0.35 + 0.55 * F.lv) return;
+      var m = fold(n.m + shift, F.lo, F.hi), v = n.v * velK, d = legato(n);
+      var first = n.t - prevT > 1.01 || i === 0;
+      if (mode === 'third' || mode === 'sixth') {
+        var h = stepIn(n.m, mode === 'third' ? -2 : -5, parent);
+        var ce = chordAt(ctx, n.t);
+        if (n.strong && ce.ch.pcs.indexOf(mod12(h)) < 0) {
+          for (var x = n.m - 3; x >= n.m - 10; x--) if (ce.ch.pcs.indexOf(mod12(x)) >= 0) { h = x; break; }
+        }
+        m = fold(h + shift, F.lo, F.hi);
+        v *= 0.8;
+      }
+      var over = scoop(first);
+      if ((mode === 'ornate' || (mode === 'lead' && expr > 0.6)) && n.d >= 0.9 && rg.next() < expr * 0.75) {
+        var up = fold(stepIn(n.m, 1, melS) + shift, F.lo, F.hi);
+        var g = Math.min(0.12, n.d * 0.15);
+        if (n.d >= 2 && expr > 0.45 && rg.next() < 0.5) {
+          // turn: note - upper - note - lower - note
+          var dn = fold(stepIn(n.m, -1, melS) + shift, F.lo, F.hi), s = 0.125;
+          [m, up, m, dn].forEach(function (mm, k) { out.push({ t: n.t + k * s, d: s * 1.1, notes: [mm], v: v * (k === 0 ? 1 : 0.8) }); });
+          out.push({ t: n.t + 4 * s, d: Math.max(0.1, d - 4 * s), notes: [m], v: v * 0.9, over: over });
+          prevT = n.t + n.d;
+          return;
+        }
+        if (n.t - g >= ctx.from - 1e-9) out.push({ t: n.t - g, d: g, notes: [up], v: v * 0.7 });
+      }
+      out.push({ t: n.t, d: Math.max(0.06, d), notes: [m], v: v, over: over });
+      if (mode === 'octaves') {
+        var o2 = m + 12 <= F.hi ? m + 12 : m - 12;
+        if (o2 >= F.lo) out.push({ t: n.t, d: Math.max(0.06, d), notes: [o2], v: v * 0.7 });
+      }
+      prevT = n.t + n.d;
+    });
+    return out;
+  }
+  // call and response: short figures in the gaps of the tune
+  function genAnswer(ctx, inst, st, F, rg, melS) {
+    var out = [], notes = ctx.themeOn ? (ctx.theme || []) : [], bpb = ctx.bpb, gaps = [];
+    if (!notes.length) { if (ctx.bar % 2 === 1 || !ctx.themeOn) gaps.push([ctx.bpb * 0.5, bpb]); }
+    else {
+      var cur = 0;
+      notes.forEach(function (n) {
+        if (n.t - cur >= 1 - 1e-6) gaps.push([cur, n.t]);
+        if (n.d >= 1.5) gaps.push([n.t + 0.5, n.t + n.d]);
+        cur = Math.max(cur, n.t + n.d);
+      });
+      if (bpb - cur >= 1 - 1e-6) gaps.push([cur, bpb]);
+    }
+    var step = ctx.sub === 3 ? 1 / 3 : 0.5, used = 0;
+    gaps.forEach(function (g) {
+      if (used >= 2 || g[0] < ctx.from - 1e-9) return;
+      if (rg.next() > 0.4 + 0.5 * F.lv) return;
+      var ce = chordAt(ctx, g[0]), tones = [];
+      for (var m = F.center - 7; m <= F.center + 9; m++) if (ce.ch.pcs.indexOf(mod12(m)) >= 0) tones.push(m);
+      if (!tones.length) return;
+      var n = Math.max(2, Math.min(4, Math.floor((g[1] - g[0]) / step) - 1)), up = rg.next() < 0.5;
+      var startI = up ? Math.floor(rg.next() * Math.max(1, tones.length - n)) : Math.min(tones.length - 1, n + Math.floor(rg.next() * 2));
+      var cur2 = tones[startI];
+      for (var k = 0; k < n; k++) {
+        var t = g[0] + step * (k + (ctx.sub === 3 ? 0 : 0.0));
+        if (t >= g[1] - 0.2) break;
+        out.push({ t: t, d: step * (k === n - 1 ? 2 : 1) * (0.7 + 0.4 * inst.feel.len), notes: [fit(cur2, F.lo, F.hi)], v: F.base * (0.75 - 0.05 * k) });
+        cur2 = rg.next() < 0.55 ? stepIn(cur2, up ? 1 : -1, melS) : (tones[Math.max(0, Math.min(tones.length - 1, tones.indexOf(cur2) + (up ? 1 : -1)))] || cur2);
+      }
+      used++;
+    });
+    return out;
+  }
+  // slow counter-line: guide tones moving smoothly against the tune
+  function genLine(ctx, inst, st, F, rg) {
+    var out = [], half = F.lv >= 0.6 && ctx.bpb >= 4;
+    var notes = ctx.theme || [], dir = notes.length > 1 ? notes[notes.length - 1].m - notes[0].m : 0;
+    var prev = st.lastLine == null ? F.center : st.lastLine;
+    var slots = [];
+    ctx.chords.forEach(function (ce) {
+      var a = Math.max(ce.t, ctx.from), b = Math.min(ctx.bpb, ce.t + ce.len);
+      if (b - a < 0.5) return;
+      if (a > ce.t + 1e-9 && !ctx.restart && a !== ctx.from) return;
+      if (half && b - a > 2) { var mid = a + (b - a) / 2; slots.push([a, mid, ce.ch]); slots.push([mid, b, ce.ch]); }
+      else slots.push([a, b, ce.ch]);
+    });
+    slots.forEach(function (s, k) {
+      var ch = s[2], guide = [];
+      if (ch.ivs[1] != null) guide.push(mod12(ch.root + ch.ivs[1]));
+      if (ch.ivs[3] != null) guide.push(mod12(ch.root + ch.ivs[3]));
+      guide.push(ch.root, mod12(ch.root + 7));
+      var best = null, bs = 1e9;
+      for (var m = F.lo; m <= F.hi; m++) {
+        var pc = mod12(m);
+        if (guide.indexOf(pc) < 0) continue;
+        var sc = Math.abs(m - prev) + (m === prev ? 1.5 : 0) + guide.indexOf(pc) * 0.8 + Math.abs(m - F.center) * 0.15;
+        if (dir && (m - prev) * dir > 0) sc += 1.2;
+        if (k === 1 && m === prev) sc += 2;
+        sc += rg.next() * 0.6;
+        if (sc < bs) { bs = sc; best = m; }
+      }
+      if (best == null) return;
+      out.push({ t: s[0], d: (s[1] - s[0]) * (0.9 + 0.15 * inst.feel.len), notes: [best], v: F.base * 0.8 });
+      prev = best;
+    });
+    st.lastLine = prev;
+    return out;
+  }
+
+  // ---------------------------------------------------------------- drums and percussion
+  var LINE_ACC = { hat: 1, ride: 1, shaker: 1, tamb: 1, brush: 1, shime: 1, cowbell: 1, bongo: 1 };
+  function genGroove(ctx, inst, st, tech, F, rg) {
+    var levels = K.patternFor(tech, ctx.meter);
+    var lvObj = levelOf(levels, F.lv);
+    if (!lvObj || typeof lvObj !== 'object') return [];
+    var out = [], fillFrom = ctx.bpb + 1, fill = null;
+    if (ctx.fill && !tech.noFill && inst.role === 'drums') {
+      var fk = ctx.meter === '3/4' ? '3/4' : ctx.sub === 3 ? '6/8' : '4/4';
+      var opts = K.FILLS[fk].filter(function (f) { return f.beats <= ctx.bpb - 1 || ctx.bpb <= 2; });
+      if (opts.length) {
+        var bigger = F.lv > 0.5 && ctx.energy > 0.5;
+        var pool = opts.filter(function (f) { return bigger || f.beats === 1; });
+        fill = (pool.length ? pool : opts)[Math.floor(rg.next() * (pool.length || opts.length))];
+        fillFrom = ctx.bpb - fill.beats;
+      }
+    }
+    Object.keys(lvObj).forEach(function (snd) {
+      var str = variant(lvObj[snd], ctx, rg);
+      if (typeof str !== 'string') return;
+      parse(str, ctx.bpb).forEach(function (e) {
+        if (e.t < ctx.from - 1e-9) return;
+        var isCym = !!LINE_ACC[snd];
+        if (e.t >= fillFrom - 1e-9 && !isCym) return;
+        var name = snd, v = F.base;
+        if (e.c === 'X') v *= 1.12; else if (e.c === 'g') v *= 0.32; else if (e.c === 'o') { name = snd === 'hat' ? 'ohat' : snd; v *= 0.85; }
+        if (isCym) v *= accent(e.t, ctx.bpb, ctx.sub) * 0.95;
+        if (e.c === 'r') {
+          for (var k = 0; k < 3; k++) out.push({ t: e.t + k * e.step / 3, d: 0.1, drums: [name], v: v * (0.55 + 0.12 * k) });
+          return;
+        }
+        out.push({ t: e.t, d: 0.25, drums: [name], v: Math.min(1, v) });
+      });
+    });
+    if (fill) {
+      var fm = tech.fillMap || {};
+      Object.keys(fill.lines).forEach(function (ln) {
+        var snd = fm[ln] || ln.toLowerCase();
+        parse(fill.lines[ln], fill.beats).forEach(function (e) {
+          var t = fillFrom + e.t;
+          if (t < ctx.from - 1e-9) return;
+          var ramp = 0.6 + 0.4 * (e.t / fill.beats);
+          out.push({ t: t, d: 0.25, drums: [snd], v: Math.min(1, F.base * ramp * (tech.softFill ? 0.65 : 1.05)) });
+        });
+      });
+    }
+    if (ctx.crash && inst.role === 'drums' && ctx.from < 1e-9) {
+      out.push({ t: 0, d: 1, drums: [tech.fillMap && tech.fillMap.K === 'taiko' ? 'taiko' : 'crash'], v: Math.min(1, F.base * 1.05) });
+    }
+    return out;
+  }
+
+  // ---------------------------------------------------------------- hits & rolls
+  function genAccent(ctx, inst, st, tech, F, rg) {
+    var out = [], mode = tech.mode, drums = inst.sound === 'drums';
+    var hit = function (t, strength, ch) {
+      if (drums) {
+        out.push({ t: t, d: 1, drums: ['crash'], v: F.base * strength });
+        out.push({ t: t, d: 1, drums: [inst.kit === 'orchestral' ? 'boom' : inst.kit === 'taiko' ? 'taiko' : 'kick'], v: F.base * strength });
+        return;
+      }
+      var low = nearest(ch.root, F.center - 6, F.lo, F.hi);
+      var notes = [low];
+      if (!F.meta.mono && inst.sound !== 'timpani') notes = H.voice(ch, 'close', F.center, { lo: F.lo, hi: F.hi, max: 4 }).notes;
+      out.push({ t: t, d: 1.5, notes: notes, v: F.base * strength });
+    };
+    var phraseStart = ctx.phraseBar === 0 && ctx.from < 1e-9;
+    if (mode === 'phrase' && phraseStart) hit(0, 1, chordAt(ctx, 0).ch);
+    if (mode === 'chord') ctx.chords.forEach(function (ce) { if (ce.t >= ctx.from - 1e-9 && ce.t >= 0) hit(ce.t, ce.t === 0 && phraseStart ? 1 : 0.7, ce.ch); });
+    if (mode === 'bell' && phraseStart) {
+      if (drums) out.push({ t: 0, d: 2, drums: ['triangle'], v: F.base });
+      else {
+        var ch = chordAt(ctx, 0).ch, m = nearest(rg.next() < 0.6 ? ch.root : mod12(ch.root + 7), F.center + 7, F.lo, F.hi);
+        out.push({ t: 0, d: 3, notes: [m], v: F.base * 0.85 });
+      }
+    }
+    if (mode === 'roll') {
+      if (phraseStart) hit(0, 1, chordAt(ctx, 0).ch);
+      if (ctx.isPhraseEnd) {
+        var len = ctx.bpb >= 3 ? 2 : 1, t0 = ctx.bpb - len, step = 1 / 6;
+        var ch2 = chordAt(ctx, t0).ch, note = nearest(ch2.root, F.center - 6, F.lo, F.hi);
+        for (var t = Math.max(t0, ctx.from); t < ctx.bpb - 1e-9; t += step) {
+          var u = (t - t0) / len, v = F.base * (0.25 + 0.65 * u);
+          if (drums) out.push({ t: t, d: 0.15, drums: ['snare'], v: v });
+          else out.push({ t: t, d: step * 1.6, notes: [note], v: v });
+        }
+      }
+    }
+    return out;
+  }
+
+  // ---------------------------------------------------------------- dispatcher
+  // inst: normalized instrument {sound, kit, role, feel, ...}; tech: technique object; f: resolved feel
+  P.generate = function (ctx, inst, st, tech, f, rg) {
+    var F = P.feel(f, ctx, inst, tech);
+    var kind = tech.kind || 'pattern';
+    if (kind === 'groove') return inst.sound === 'drums' ? genGroove(ctx, inst, st, tech, F, rg) : [];
+    if (inst.sound === 'drums') {
+      if (kind === 'accent') return genAccent(ctx, inst, st, tech, F, rg);
+      return [];
+    }
+    switch (kind) {
+      case 'hold': return genHold(ctx, inst, st, tech, F, rg);
+      case 'roll': return genRoll(ctx, inst, st, tech, F, rg);
+      case 'sparkle': return genSparkle(ctx, inst, st, tech, F, rg);
+      case 'drone': return genDrone(ctx, inst, st, tech, F, rg);
+      case 'theme': return genTheme(ctx, inst, st, tech, F, rg);
+      case 'accent': return genAccent(ctx, inst, st, tech, F, rg);
+      default:
+        if (inst.role === 'bass' || tech.roles[0] === 'bass') return genBass(ctx, inst, st, tech, F, rg);
+        return genPattern(ctx, inst, st, tech, F, rg);
+    }
+  };
+}),
+(function (DM) {
+  'use strict';
+  var K = DM.K;
+  var ST = DM.STUDIO = {};
+  ST.FORMAT = 'adaptive-music-preset';
+  ST.VERSION = 1;
+  function num(x, def, lo, hi) {
+    var v = typeof x === 'number' && isFinite(x) ? x : def;
+    if (lo != null && v < lo) v = lo;
+    if (hi != null && v > hi) v = hi;
+    return v;
+  }
+  function str(x, def) { return typeof x === 'string' && x.trim() ? x : def; }
+  function clone(o) { return JSON.parse(JSON.stringify(o)); }
+  ST.clone = clone;
+  var uidN = 0;
+  DM.uid = function (prefix) {
+    uidN = (uidN + 1) % 1296;
+    return (prefix || 'x') + '_' + Date.now().toString(36).slice(-5) + Math.floor(Math.random() * 46656).toString(36) + uidN.toString(36);
+  };
+
+  // ---------------------------------------------------------------- link targets
+  // kind: add (offsets are summed), mul (factors multiply), max (largest wins), choice (first parameter wins)
+  ST.GLOBAL_TARGETS = [
+    { key: 'style', label: 'Which style plays', kind: 'choice', desc: 'switch to another style in some ranges of this parameter' },
+    { key: 'energy', label: 'Energy', kind: 'add', min: -1, max: 1, desc: 'calm to intense: louder, busier, and instruments with a higher "joins at energy" come in' },
+    { key: 'speed', label: 'Speed', kind: 'mul', min: 0.5, max: 1.5, unit: 'x', desc: 'tempo multiplier' },
+    { key: 'volume', label: 'Music volume', kind: 'mul', min: 0, max: 1.5, unit: 'x', desc: 'overall loudness' },
+    { key: 'muffle', label: 'Muffle', kind: 'max', min: 0, max: 1, desc: 'muffled like through a wall or underwater (indoors, caves)' },
+    { key: 'brightness', label: 'Brightness', kind: 'add', min: -1, max: 1, desc: 'darker, softer sound to brighter, crisper sound' },
+    { key: 'space', label: 'Space', kind: 'add', min: -1, max: 1, desc: 'dry room to huge echoing hall' },
+    { key: 'mood', label: 'Mood', kind: 'add', min: -3, max: 3, step: 1, unit: 'steps', desc: 'moves the scale darker (minus) or brighter (plus), e.g. major to minor' },
+    { key: 'transpose', label: 'Key shift', kind: 'add', min: -12, max: 12, step: 1, unit: 'semitones', desc: 'moves the whole song up or down' },
+    { key: 'color', label: 'Chord colour', kind: 'add', min: -1, max: 1, desc: 'plain chords to rich jazzy chords' },
+    { key: 'variety', label: 'Variety', kind: 'add', min: -1, max: 1, desc: 'repetitive to ever-changing chords and sections' },
+    { key: 'swing', label: 'Swing', kind: 'add', min: -1, max: 1, desc: 'straight to swung (bouncy) rhythm' },
+    { key: 'lofi', label: 'Old tape', kind: 'add', min: -1, max: 1, desc: 'adds tape wobble, crackle and dust' }
+  ];
+  ST.INST_TARGETS = [
+    { key: 'volume', label: 'Volume', kind: 'mul', min: 0, max: 2, unit: 'x', desc: 'fade this instrument in or out' },
+    { key: 'on', label: 'On / off', kind: 'choice', desc: 'let this instrument play only in some ranges' },
+    { key: 'busy', label: 'Busyness', kind: 'add', min: -1, max: 1, desc: 'plays fewer or more notes' },
+    { key: 'dyn', label: 'Dynamics', kind: 'add', min: -1, max: 1, desc: 'plays softer or harder' },
+    { key: 'reg', label: 'Register', kind: 'add', min: -2, max: 2, step: 1, unit: 'octaves', desc: 'plays lower or higher' },
+    { key: 'len', label: 'Note length', kind: 'add', min: -1, max: 1, desc: 'shorter (staccato) or longer (legato) notes' },
+    { key: 'tone', label: 'Tone', kind: 'add', min: -1, max: 1, desc: 'darker or brighter sound' },
+    { key: 'reverb', label: 'Reverb', kind: 'add', min: -1, max: 1, desc: 'closer or further away' },
+    { key: 'tech', label: 'Playing style', kind: 'choice', desc: 'switch how it plays (e.g. held chords to tremolo)' }
+  ];
+  var GT = {}, IT = {};
+  ST.GLOBAL_TARGETS.forEach(function (t) { GT[t.key] = t; });
+  ST.INST_TARGETS.forEach(function (t) { IT[t.key] = t; });
+  // 'style' | 'g:energy' | 'i:<instId>:volume'
+  ST.targetInfo = function (target) {
+    if (target === 'style') return { scope: 'style', key: 'style', t: GT.style };
+    var p = String(target).split(':');
+    if (p[0] === 'g' && GT[p[1]]) return { scope: 'g', key: p[1], t: GT[p[1]] };
+    if (p[0] === 'i' && p.length === 3 && IT[p[2]]) return { scope: 'i', inst: p[1], key: p[2], t: IT[p[2]] };
+    return null;
+  };
+  ST.neutral = function (t) { return t.kind === 'mul' ? 1 : 0; };
+
+  // ---------------------------------------------------------------- defaults
+  ST.INST_FEEL = { busy: 0.5, dyn: 0.6, reg: 0, len: 0.6, expr: 0.4, timing: 0 };
+  ST.INST_MIX = { vol: 0.7, pan: 0, rev: 0.3, echo: 0, tone: 0.85 };
+  var COLORS = ['#7cc4a4', '#e2b866', '#86a8e7', '#e0716b', '#b892e0', '#5fc4d0', '#d98fb5', '#a7c36a', '#e59a5c', '#8fb0b8', '#c9c26b', '#9e9ae6'];
+  ST.COLORS = COLORS;
+  ST.ENTRY_MODES = [
+    { v: 'blend', name: 'Smooth blend', desc: 'fades in over a few bars while the old style fades out, in time' },
+    { v: 'bar', name: 'On the next bar', desc: 'switches cleanly at the next bar line' },
+    { v: 'beat', name: 'On the next beat', desc: 'switches almost at once - for sudden moments like combat' },
+    { v: 'phrase', name: 'At the end of the phrase', desc: 'waits for the musical sentence to finish (up to 4 bars)' }
+  ];
+
+  function normInst(o, i, warn) {
+    o = o || {};
+    var sound = o.sound === 'drums' || DM.PRESETS[o.sound] ? o.sound : null;
+    if (!sound) { if (o.sound) warn.push('Unknown sound "' + o.sound + '" on ' + (o.name || 'an instrument') + ' - using felt piano'); sound = 'felt_piano'; }
+    var role = K.ROLES[o.role] ? o.role : (sound === 'drums' ? 'drums' : 'chords');
+    if (sound === 'drums' && ['drums', 'perc', 'accent'].indexOf(role) < 0) role = 'drums';
+    if (sound !== 'drums' && (role === 'drums' || role === 'perc')) role = 'chords';
+    var tech = o.tech && o.tech !== 'auto' && K.TECH[o.tech] && K.TECH[o.tech].roles.indexOf(role) >= 0 ? o.tech : 'auto';
+    var f = o.feel || {}, m = o.mix || {};
+    return {
+      id: str(o.id, 'i' + i), name: str(o.name, K.soundName(sound)), color: str(o.color, COLORS[i % COLORS.length]),
+      sound: sound, kit: sound === 'drums' ? (DM.KITS[o.kit] ? o.kit : 'acoustic') : null, role: role, tech: tech,
+      feel: { busy: num(f.busy, 0.5, 0, 1), dyn: num(f.dyn, 0.6, 0, 1), reg: Math.round(num(f.reg, 0, -2, 2)), len: num(f.len, 0.6, 0, 1), expr: num(f.expr, 0.4, 0, 1), timing: num(f.timing, 0, -1, 1) },
+      mix: { vol: num(m.vol, 0.7, 0, 1), pan: num(m.pan, 0, -1, 1), rev: num(m.rev, 0.3, 0, 1), echo: num(m.echo, 0, 0, 1), tone: num(m.tone, 0.85, 0, 1) }
+    };
+  }
+  function normStyle(o, i, instIds, warn) {
+    o = o || {};
+    var g = K.GENRES[o.genre] || K.GENRES.folk, c = o.chords || {}, t = o.tune || {}, e = o.entry || {};
+    var key = 'C';
+    try { DM.parsePitchClass(o.key); key = o.key; } catch (err) { key = g.key || 'C'; }
+    var band = (Array.isArray(o.band) ? o.band : []).filter(function (b) {
+      var ok = b && instIds[b.inst];
+      if (b && !ok) warn.push('Style "' + (o.name || '?') + '" referred to a missing instrument; removed it from the band');
+      return ok;
+    }).map(function (b) { return { inst: b.inst, level: num(b.level, 1, 0, 1.5), enter: num(b.enter, 0, 0, 1) }; });
+    var seen = {};
+    band = band.filter(function (b) { if (seen[b.inst]) return false; seen[b.inst] = true; return true; });
+    return {
+      id: str(o.id, 's' + i), name: str(o.name, 'Style ' + (i + 1)), color: str(o.color, COLORS[(i + 3) % COLORS.length]),
+      genre: K.GENRES[o.genre] ? o.genre : 'folk',
+      tempo: num(o.tempo, g.tempo, 30, 240), meter: K.METERS[o.meter] ? o.meter : '4/4', swing: num(o.swing, 0, 0, 1), swing16: !!o.swing16,
+      key: key, scale: K.SCALES[o.scale] ? o.scale : 'major',
+      chords: { prog: K.PROGRESSIONS[c.prog] ? c.prog : 'pop', custom: typeof c.custom === 'string' ? c.custom : '', speed: [0.5, 1, 2].indexOf(c.speed) >= 0 ? c.speed : 1,
+        color: num(c.color, 0.3, 0, 1), variety: num(c.variety, 0.4, 0, 1) },
+      tune: { kind: K.TUNES[t.kind] ? t.kind : 'lyrical', seed: Math.floor(num(t.seed, 1, 1, 1e9)), presence: num(t.presence, 1, 0, 1) },
+      energy: num(o.energy, 0.5, 0, 1), humanize: num(o.humanize, 0.4, 0, 1), space: num(o.space, 0.4, 0, 1), bright: num(o.bright, 0.5, 0, 1), lofi: num(o.lofi, 0, 0, 1),
+      entry: { mode: ['blend', 'bar', 'beat', 'phrase'].indexOf(e.mode) >= 0 ? e.mode : 'bar', bars: Math.round(num(e.bars, 2, 1, 16)), fill: !!e.fill, crash: e.crash !== false },
+      band: band
+    };
+  }
+  function normPoints(pts, p, t) {
+    var out = (Array.isArray(pts) ? pts : []).filter(function (q) { return Array.isArray(q) && isFinite(q[0]) && isFinite(q[1]); })
+      .map(function (q) { return [num(q[0], p.min, p.min, p.max), num(q[1], ST.neutral(t), t.min, t.max)]; });
+    out.sort(function (a, b) { return a[0] - b[0]; });
+    if (!out.length) out = [[p.min, ST.neutral(t)], [p.max, ST.neutral(t)]];
+    return out;
+  }
+  function normSteps(steps, p) {
+    var out = (Array.isArray(steps) ? steps : []).filter(function (s) { return s && isFinite(s.from); })
+      .map(function (s) { return { from: num(s.from, p.min, p.min, p.max), value: s.value == null ? null : s.value }; });
+    out.sort(function (a, b) { return a.from - b.from; });
+    if (!out.length || out[0].from > p.min) out.unshift({ from: p.min, value: null });
+    return out;
+  }
+  function normParam(o, i, ids, warn) {
+    o = o || {};
+    var type = ['slider', 'switch', 'list'].indexOf(o.type) >= 0 ? o.type : 'slider';
+    var options = type === 'list' ? (Array.isArray(o.options) && o.options.length ? o.options.map(function (x) { return String(x); }) : ['A', 'B']) : [];
+    var min = type === 'slider' ? num(o.min, 0) : 0;
+    var max = type === 'slider' ? num(o.max, 1) : type === 'switch' ? 1 : options.length - 1;
+    if (!(max > min)) max = min + 1;
+    var p = {
+      id: str(o.id, 'p' + i), name: str(o.name, 'Parameter ' + (i + 1)), type: type, min: min, max: max,
+      step: type === 'slider' ? num(o.step, (max - min) / 100, 1e-6) : 1, def: 0, unit: typeof o.unit === 'string' ? o.unit : '',
+      wrap: type === 'slider' && !!o.wrap, smooth: num(o.smooth, type === 'slider' ? 1 : 0.3, 0, 30), options: options,
+      marks: (Array.isArray(o.marks) ? o.marks : []).filter(function (m) { return m && isFinite(m.at); }).map(function (m) { return { at: num(m.at, min, min, max), label: String(m.label || '') }; }),
+      desc: typeof o.desc === 'string' ? o.desc : '', links: []
+    };
+    p.def = num(o.def, min, min, max);
+    if (type !== 'slider') p.def = Math.round(p.def);
+    p.links = (Array.isArray(o.links) ? o.links : []).map(function (l, k) {
+      var info = l && ST.targetInfo(l.target);
+      if (!info) { warn.push('Removed a link with an unknown target on "' + p.name + '"'); return null; }
+      if (info.scope === 'i' && !ids.inst[info.inst]) { warn.push('Removed a link to a deleted instrument on "' + p.name + '"'); return null; }
+      var L = { id: str(l.id, p.id + '_l' + k), target: l.target };
+      if (info.t.kind === 'choice') {
+        L.steps = normSteps(l.steps, p);
+        L.steps.forEach(function (s) {
+          if (info.key === 'style' && s.value != null && !ids.style[s.value]) s.value = null;
+          if (info.key === 'on' && s.value != null && s.value !== 'on' && s.value !== 'off') s.value = null;
+          if (info.key === 'tech' && s.value != null && !K.TECH[s.value]) s.value = null;
+        });
+      } else L.points = normPoints(l.points, p, info.t);
+      return L;
+    }).filter(Boolean);
+    return p;
+  }
+  function normEvent(o, i, ids) {
+    o = o || {};
+    var acts = (Array.isArray(o.actions) ? o.actions : []).map(function (a) {
+      if (!a) return null;
+      if (a.do === 'set' || a.do === 'pulse') {
+        if (!ids.param[a.param]) return null;
+        return { do: a.do, param: a.param, value: num(a.value, 0), time: num(a.time, 0, 0, 60), hold: num(a.hold, 4, 0.1, 600) };
+      }
+      if (a.do === 'cue') return { do: 'cue', cue: K.CUES[a.cue] ? a.cue : 'chime', sound: a.sound === 'drums' || DM.PRESETS[a.sound] ? a.sound : null, when: ['now', 'beat', 'bar'].indexOf(a.when) >= 0 ? a.when : 'beat', volume: num(a.volume, 0.8, 0, 1.5) };
+      if (a.do === 'stop' || a.do === 'start') return { do: a.do, fade: num(a.fade, 2, 0, 30) };
+      return null;
+    }).filter(Boolean);
+    return { id: str(o.id, 'e' + i), name: str(o.name, 'Event ' + (i + 1)), key: typeof o.key === 'string' ? o.key.slice(0, 1) : '', actions: acts };
+  }
+
+  // Repair + fill defaults. Never throws; returns a new object. warnings are collected on .warnings (not saved).
+  DM.normalizePreset = function (raw) {
+    raw = raw && typeof raw === 'object' ? raw : {};
+    var warn = [];
+    var insts = (Array.isArray(raw.instruments) ? raw.instruments : []).map(function (o, i) { return normInst(o, i, warn); });
+    var instIds = {};
+    insts = insts.filter(function (x) { if (instIds[x.id]) { x.id = x.id + '_' + Math.floor(Math.random() * 1e6).toString(36); } instIds[x.id] = true; return true; });
+    var styles = (Array.isArray(raw.styles) ? raw.styles : []).map(function (o, i) { return normStyle(o, i, instIds, warn); });
+    var styleIds = {};
+    styles.forEach(function (s) { if (styleIds[s.id]) s.id = s.id + '_' + Math.floor(Math.random() * 1e6).toString(36); styleIds[s.id] = true; });
+    var ids = { inst: instIds, style: styleIds, param: {} };
+    var praw = Array.isArray(raw.params) ? raw.params : [];
+    praw.forEach(function (o, i) { if (o && o.id) ids.param[o.id] = true; });
+    var params = praw.map(function (o, i) { return normParam(o, i, ids, warn); });
+    ids.param = {};
+    params.forEach(function (p) { ids.param[p.id] = true; });
+    var events = (Array.isArray(raw.events) ? raw.events : []).map(function (o, i) { return normEvent(o, i, ids); });
+    var snaps = (Array.isArray(raw.snapshots) ? raw.snapshots : []).map(function (s, i) {
+      var vals = {};
+      if (s && s.values) Object.keys(s.values).forEach(function (k) { if (ids.param[k] && isFinite(s.values[k])) vals[k] = s.values[k]; });
+      return { id: str(s && s.id, 'n' + i), name: str(s && s.name, 'Snapshot ' + (i + 1)), values: vals };
+    });
+    var out = {
+      format: ST.FORMAT, version: ST.VERSION, id: str(raw.id, 'preset'), name: str(raw.name, 'Untitled'), notes: typeof raw.notes === 'string' ? raw.notes : '',
+      seed: Math.floor(num(raw.seed, 1, 1, 1e9)), master: { volume: num(raw.master && raw.master.volume, 0.8, 0, 1.5) },
+      main: styleIds[raw.main] ? raw.main : (styles[0] ? styles[0].id : null),
+      instruments: insts, styles: styles, params: params, events: events, snapshots: snaps
+    };
+    Object.defineProperty(out, 'warnings', { value: warn, enumerable: false });
+    return out;
+  };
+
+  // ---------------------------------------------------------------- link evaluation
+  function curve(points, v, p) {
+    var n = points.length;
+    if (!n) return null;
+    if (n === 1) return points[0][1];
+    var first = points[0], last = points[n - 1];
+    if (v <= first[0] || v >= last[0]) {
+      if (p.wrap) {
+        var span = p.max - p.min, dist = first[0] + span - last[0];
+        if (dist <= 1e-9) return v <= first[0] ? first[1] : last[1];
+        var u = v >= last[0] ? (v - last[0]) / dist : (v + span - last[0]) / dist;
+        return last[1] + (first[1] - last[1]) * Math.max(0, Math.min(1, u));
+      }
+      return v <= first[0] ? first[1] : last[1];
+    }
+    for (var i = 1; i < n; i++) {
+      if (v <= points[i][0]) {
+        var a = points[i - 1], b = points[i], w = b[0] - a[0];
+        return w <= 1e-12 ? b[1] : a[1] + (b[1] - a[1]) * (v - a[0]) / w;
+      }
+    }
+    return last[1];
+  }
+  function step(steps, v, p) {
+    var val = steps.length ? steps[0].value : null;
+    for (var i = 0; i < steps.length; i++) if (steps[i].from <= v + 1e-9) val = steps[i].value;
+    return val;
+  }
+  ST.curve = curve;
+  ST.stepValue = step;
+  ST.linkValue = function (L, v, p) { return L.steps ? step(L.steps, v, p) : curve(L.points, v, p); };
+
+  // values: {paramId: value}. Returns mods = {g:{...}, style, styleBy, inst:{id:{...}}, why:[]}
+  DM.evalLinks = function (P, values) {
+    var g = { energy: 0, speed: 1, volume: 1, muffle: 0, brightness: 0, space: 0, mood: 0, transpose: 0, color: 0, variety: 0, swing: 0, lofi: 0 };
+    var M = { g: g, style: null, styleBy: null, inst: {}, why: [] };
+    for (var i = 0; i < P.params.length; i++) {
+      var p = P.params[i], v = values && values[p.id] != null ? values[p.id] : p.def;
+      for (var j = 0; j < p.links.length; j++) {
+        var L = p.links[j], info = ST.targetInfo(L.target);
+        if (!info) continue;
+        var val = ST.linkValue(L, v, p);
+        if (info.scope === 'style') {
+          if (M.style == null && val != null) { M.style = val; M.styleBy = p.id; M.why.push({ param: p.id, target: 'style', value: val }); }
+          continue;
+        }
+        var bag;
+        if (info.scope === 'g') bag = g;
+        else bag = M.inst[info.inst] || (M.inst[info.inst] = { volume: 1, on: true, busy: 0, dyn: 0, reg: 0, len: 0, tone: 0, reverb: 0, tech: null, techBy: null, offBy: null });
+        var k = info.key, kind = info.t.kind;
+        if (kind === 'choice') {
+          if (k === 'on') { if (val === 'off' && bag.on) { bag.on = false; bag.offBy = p.id; } }
+          else if (k === 'tech') { if (bag.tech == null && val != null) { bag.tech = val; bag.techBy = p.id; } }
+        } else if (val != null) {
+          if (kind === 'add') bag[k] = (bag[k] || 0) + val;
+          else if (kind === 'mul') bag[k] = (bag[k] == null ? 1 : bag[k]) * val;
+          else if (kind === 'max') bag[k] = Math.max(bag[k] || 0, val);
+        }
+        if (val != null) M.why.push({ param: p.id, target: L.target, value: val });
+      }
+    }
+    return M;
+  };
+
+  // ---------------------------------------------------------------- factories
+  ST.newInstrument = function (o) {
+    o = o || {};
+    var sound = o.sound || 'felt_piano';
+    var role = o.role || (sound === 'drums' ? 'drums' : 'chords');
+    var inst = normInst({ id: o.id || DM.uid('inst'), name: o.name, color: o.color, sound: sound, kit: o.kit, role: role, tech: o.tech || 'auto', feel: o.feel, mix: o.mix }, o.index || 0, []);
+    return inst;
+  };
+  ST.newParam = function (type, name) {
+    var base = { id: DM.uid('par'), name: name || 'New parameter', type: type || 'slider', min: 0, max: 1, step: 0.01, def: 0, smooth: type === 'slider' || !type ? 1 : 0.3, links: [] };
+    if (type === 'list') base.options = ['First', 'Second', 'Third'];
+    return normParam(base, 0, { inst: {}, style: {}, param: {} }, []);
+  };
+  // a sensible starting shape for a new link
+  ST.newLink = function (p, target, preset) {
+    var info = ST.targetInfo(target), L = { id: DM.uid('lnk'), target: target };
+    if (!info) return null;
+    if (info.t.kind === 'choice') {
+      var other = null;
+      if (info.key === 'style') other = preset && preset.styles.length ? preset.styles[preset.styles.length > 1 ? 1 : 0].id : null;
+      if (info.key === 'on') other = 'off';
+      if (info.key === 'tech') other = 'tremolo';
+      if (p.type === 'slider') L.steps = [{ from: p.min, value: info.key === 'on' ? 'on' : null }, { from: p.min + (p.max - p.min) / 2, value: other }];
+      else { L.steps = []; for (var i = 0; i <= p.max; i++) L.steps.push({ from: i, value: i === 0 ? (info.key === 'on' ? 'on' : null) : other }); }
+    } else {
+      var t = info.t, n = ST.neutral(t), far;
+      if (t.kind === 'mul') far = info.key === 'volume' ? (info.scope === 'i' ? 0 : 0.6) : 1.2;
+      else if (t.kind === 'max') far = 1;
+      else far = t.step ? (info.key === 'mood' ? -2 : 1) : 0.4;
+      if (p.type === 'slider') L.points = [[p.min, n], [p.max, far]];
+      else { L.points = []; for (var j = 0; j <= p.max; j++) L.points.push([j, j === 0 ? n : far]); }
+    }
+    return L;
+  };
+  ST.newEvent = function (name) { return { id: DM.uid('evt'), name: name || 'New event', key: '', actions: [] }; };
+  ST.blankPreset = function (name) {
+    return DM.normalizePreset({ id: DM.uid('preset'), name: name || 'New preset', seed: 1 + Math.floor(Math.random() * 99999), instruments: [], styles: [], params: [], events: [], snapshots: [] });
+  };
+  // Build a style from a genre template. Re-uses instruments already in `preset` that match exactly.
+  // Returns { style, instruments: [new instruments to add] }.
+  ST.styleFromGenre = function (genreId, name, preset, seed) {
+    var g = K.GENRES[genreId] || K.GENRES.folk, added = [], band = [];
+    var have = (preset && preset.instruments) || [];
+    (g.band || []).forEach(function (b, i) {
+      var snd = b[1], kit = null;
+      if (snd.indexOf('drums:') === 0) { kit = snd.slice(6); snd = 'drums'; }
+      var feel = Object.assign({}, ST.INST_FEEL, b[4] || {}), mix = Object.assign({}, ST.INST_MIX, b[5] || {});
+      var spec = { name: b[0], sound: snd, kit: kit, role: b[2], tech: b[3] || 'auto', feel: feel, mix: mix };
+      var found = null;
+      have.concat(added).forEach(function (x) {
+        if (!found && x.name === spec.name && x.sound === spec.sound && x.role === spec.role && x.tech === spec.tech && (x.kit || null) === kit) found = x;
+      });
+      if (!found) {
+        found = ST.newInstrument({ name: b[0], sound: snd, kit: kit, role: b[2], tech: b[3] || 'auto', feel: feel, mix: mix, index: have.length + added.length });
+        added.push(found);
+      }
+      band.push({ inst: found.id, level: 1, enter: b[6] || 0 });
+    });
+    var style = {
+      id: DM.uid('sty'), name: name || g.name, genre: g.id, tempo: g.tempo, meter: g.meter, swing: g.swing || 0, swing16: !!g.swing16, key: g.key, scale: g.scale,
+      chords: { prog: g.prog, custom: '', speed: g.speed || 1, color: g.color == null ? 0.3 : g.color, variety: g.variety == null ? 0.4 : g.variety },
+      tune: { kind: g.tune || 'lyrical', seed: seed || 1 + Math.floor(Math.random() * 99999), presence: g.presence == null ? 1 : g.presence },
+      energy: g.energy == null ? 0.5 : g.energy, humanize: g.humanize == null ? 0.4 : g.humanize, space: g.space == null ? 0.4 : g.space,
+      bright: g.bright == null ? 0.5 : g.bright, lofi: g.lofi || 0, entry: { mode: 'bar', bars: 2, fill: false, crash: true }, band: band
+    };
+    return { style: style, instruments: added };
+  };
+
+  // the technique an instrument actually uses in a style (resolves "auto")
+  ST.techniqueOf = function (inst, style, overrideTech) {
+    var id = overrideTech || inst.tech;
+    if (id && id !== 'auto' && K.TECH[id] && K.TECH[id].roles.indexOf(inst.role) >= 0) return id;
+    return K.autoTechnique(inst.role, inst.sound, style ? style.genre : 'folk', style ? style.meter : '4/4');
+  };
+  ST.instById = function (P, id) { for (var i = 0; i < P.instruments.length; i++) if (P.instruments[i].id === id) return P.instruments[i]; return null; };
+  ST.styleById = function (P, id) { for (var i = 0; i < P.styles.length; i++) if (P.styles[i].id === id) return P.styles[i]; return null; };
+  ST.paramById = function (P, id) { for (var i = 0; i < P.params.length; i++) if (P.params[i].id === id) return P.params[i]; return null; };
+  ST.paramByName = function (P, name) {
+    var n = String(name).toLowerCase();
+    for (var i = 0; i < P.params.length; i++) if (P.params[i].id === name || P.params[i].name.toLowerCase() === n) return P.params[i];
+    return null;
+  };
+  ST.eventByName = function (P, name) {
+    var n = String(name).toLowerCase();
+    for (var i = 0; i < P.events.length; i++) if (P.events[i].id === name || P.events[i].name.toLowerCase() === n) return P.events[i];
+    return null;
+  };
+  // human-readable value of a parameter
+  ST.formatValue = function (p, v) {
+    if (p.type === 'switch') return v >= 0.5 ? 'On' : 'Off';
+    if (p.type === 'list') return p.options[Math.max(0, Math.min(p.options.length - 1, Math.round(v)))] || '';
+    var dec = p.step >= 1 ? 0 : p.step >= 0.1 ? 1 : 2;
+    return (Math.round(v / p.step) * p.step).toFixed(dec) + (p.unit ? ' ' + p.unit : '');
+  };
+}),
+(function (DM) {
+  'use strict';
+  var K = DM.K, H = DM.H, P = DM.P, ST = DM.STUDIO;
+  var MAXB = 1024, LOOK = 0.5;
+  var ROLE_DB = { melody: -23, counter: -22.5, chords: -26.5, arp: -26, bass: -23.5, pad: -27, drums: -28.5, perc: -31.5, accent: -25 };
+  var LEVEL_TARGET = -19; // leveler: dBFS RMS the music drifts toward (half of the difference, +-6 dB)
+  function clamp(x, a, b) { return x < a ? a : x > b ? b : x; }
+  function clamp01(x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
+  function eqIn(u) { return Math.sin(clamp01(u) * Math.PI / 2); }
+
+  // ---------------------------------------------------------------- channel (one instrument's audio)
+  function Channel(jam, inst) {
+    this.jam = jam; this.sr = jam.sr; this.id = inst.id;
+    this.voices = []; this.gainNow = 0; this.level = 0; this.hits = 0; this.state = {}; this.active = false; this.wasActive = false;
+    this.fL = new DM.SVF(jam.sr); this.fR = new DM.SVF(jam.sr); this.toneNow = 20000;
+    this.iL = new DM.SVF(jam.sr); this.iR = new DM.SVF(jam.sr);
+    this.rng = new DM.Rng(DM.hashString(jam.seed + ':ch:' + inst.id));
+    this.revNow = inst.mix.rev; this.setInst(inst);
+  }
+  Channel.prototype.setInst = function (inst) {
+    var key = inst.sound + ':' + (inst.kit || '');
+    if (key !== this.key) {
+      this.key = key;
+      this.instr = new DM.Instrument(inst.sound === 'drums' ? { preset: 'drums', kit: inst.kit || 'acoustic' } : { preset: inst.sound }, this.sr);
+      var ref = inst.sound === 'drums' ? (DM.KIT_REF[inst.kit] || -30) : (DM.PRESET_REF[inst.sound] || -28);
+      this.refDb = ref;
+    }
+    this.inst = inst;
+    this.norm = DM.dbToGain(clamp((ROLE_DB[inst.role] || -27) - this.refDb, -18, 18));
+    var pg = DM.panGains(inst.mix.pan);
+    this.panL = pg[0] * Math.SQRT2; this.panR = pg[1] * Math.SQRT2;
+  };
+  Channel.prototype.release = function () {
+    for (var i = 0; i < this.voices.length; i++) { var v = this.voices[i]; if (v.offAt != null && v.t < v.offAt) v.offAt = v.t; if (v.ring) v.ring = false; }
+  };
+
+  // ---------------------------------------------------------------- Jam
+  function Jam(preset, sr, opts) {
+    opts = opts || {};
+    this.sr = sr; this.opts = opts;
+    this.beat = 0; this.sample = 0; this.time = 0;
+    this.channels = {}; this.cueCh = {};
+    this.pv = {}; this.pt = {}; this.pglide = {};
+    this.mute = {}; this.solo = null; this.focus = null; this.audition = null;
+    this.q = []; this.startQ = []; this.timers = [];
+    this.noteLog = []; this.logNotes = !!opts.logNotes; this.eventLog = [];
+    this.masterFade = 1; this.fadeTarget = 1; this.fadeSec = 1; this.stopped = false;
+    this.duck = 1;
+    var B = function () { return new Float32Array(MAXB); };
+    this.dryL = B(); this.dryR = B(); this.revL = B(); this.revR = B(); this.dlyL = B(); this.dlyR = B(); this.fxL = B(); this.fxR = B();
+    this.chL = B(); this.chR = B(); this.tmp = B();
+    this.reverb = new DM.Reverb(sr, { decay: 2.5, size: 1, damping: 0.45, predelay: 0.02 }); this.revDecay = 2.5;
+    this.delay = new DM.Delay(sr, 3);
+    this.limiter = new DM.Limiter(sr, 0.89);
+    this.mfL = new DM.SVF(sr); this.mfR = new DM.SVF(sr); this.muffleNow = 0;
+    this.tnL = new DM.SVF(sr); this.tnR = new DM.SVF(sr); this.hpL = new DM.SVF(sr); this.hpR = new DM.SVF(sr); this.brightNow = 0.5;
+    this.lfN = 4096; this.lfL = new Float32Array(this.lfN); this.lfR = new Float32Array(this.lfN); this.lfW = 0; this.lfPh = 0; this.lfPh2 = 0; this.crk = 0;
+    this.volNow = 1; this.spaceNow = 0.4; this.lofiNow = 0;
+    this.setPreset(preset, true);
+    if (opts.params) for (var k in opts.params) this.setParam(k, opts.params[k], 0);
+    if (opts.focus) this.focus = opts.focus;
+    this.reset();
+  }
+  DM.Jam = Jam;
+
+  Jam.prototype.reset = function () {
+    this.beat = 0; this.sample = 0; this.time = 0;
+    this.q = []; this.startQ = []; this.pending = null;
+    this.nextBar = 0; this.barIdx = 0; this.secIdx = 0; this.sec = null; this.barInSec = 0; this.curBar = null;
+    this.mix = []; this.target = null; this.fillNext = false; this.lastFill = false;
+    for (var id in this.channels) { var c = this.channels[id]; c.voices = []; c.state = {}; c.wasActive = false; c.active = false; c.gainNow = 0; }
+    this.M = DM.evalLinks(this.P, this.pv);
+    var first = this.desiredStyle();
+    if (first) { this.target = first; this.mix.push({ id: first, g0: 1, g1: 1, b0: 0, b1: 0 }); }
+    var st = this.styleObj(this.target);
+    this.tempoNow = st ? st.tempo * this.M.g.speed : 100;
+    this.tempoFrom = null;
+    this.masterFade = 1; this.fadeTarget = 1; this.stopped = false;
+  };
+
+  // empty the reverb and echo (bake: start a loop without the pre-roll's tail)
+  Jam.prototype.clearFx = function () {
+    this.reverb = new DM.Reverb(this.sr, { decay: this.revDecay, size: 1, damping: 0.45, predelay: 0.02 });
+    this.delay = new DM.Delay(this.sr, 3);
+    this.lfL.fill(0); this.lfR.fill(0);
+  };
+
+  // live preset edits: keep playing, keep parameter values and position
+  Jam.prototype.setPreset = function (preset, initial) {
+    var P = DM.normalizePreset(preset);
+    this.P = P;
+    this.seed = this.opts.seed != null ? this.opts.seed : P.seed;
+    this.instMap = {}; this.styleMap = {}; this.paramMap = {};
+    var self = this;
+    P.instruments.forEach(function (i) { self.instMap[i.id] = i; });
+    P.styles.forEach(function (s) { self.styleMap[s.id] = s; });
+    P.params.forEach(function (p) {
+      self.paramMap[p.id] = p;
+      if (self.pv[p.id] == null) { self.pv[p.id] = p.def; self.pt[p.id] = p.def; }
+      self.pv[p.id] = clamp(self.pv[p.id], p.min, p.max); self.pt[p.id] = clamp(self.pt[p.id], p.min, p.max);
+    });
+    for (var id in this.channels) {
+      if (!this.instMap[id]) { delete this.channels[id]; continue; }
+      this.channels[id].setInst(this.instMap[id]);
+    }
+    P.instruments.forEach(function (i) { if (!self.channels[i.id]) self.channels[i.id] = new Channel(self, i); });
+    if (this.target && !this.styleMap[this.target]) this.target = null;
+    this.mix = (this.mix || []).filter(function (m) { return self.styleMap[m.id]; });
+    if (this.focus && !this.styleMap[this.focus]) this.focus = null;
+    if (this.audition && !this.instMap[this.audition]) this.audition = null;
+    this.harmSig = null; // re-plan harmony on the next bar if anything changed
+    if (!initial && !this.target) {
+      var d = this.desiredStyle();
+      if (d) { this.target = d; this.mix = [{ id: d, g0: 0, g1: 1, b0: this.beat, b1: this.beat + 1 }]; this.nextBar = Math.max(this.nextBar, Math.ceil(this.beat)); this.sec = null; }
+    }
+  };
+  Jam.prototype.styleObj = function (id) { return id ? this.styleMap[id] || null : null; };
+  Jam.prototype.desiredStyle = function () {
+    if (this.focus && this.styleMap[this.focus]) return this.focus;
+    var s = this.M && this.M.style;
+    if (s && this.styleMap[s]) return s;
+    return this.P.main && this.styleMap[this.P.main] ? this.P.main : (this.P.styles[0] ? this.P.styles[0].id : null);
+  };
+
+  // ---------------------------------------------------------------- control API
+  Jam.prototype.paramRef = function (idOrName) {
+    return this.paramMap[idOrName] || ST.paramByName(this.P, idOrName);
+  };
+  Jam.prototype.setParam = function (idOrName, v, glideSec) {
+    var p = this.paramRef(idOrName);
+    if (!p || !isFinite(v)) return false;
+    v = clamp(+v, p.min, p.max);
+    if (p.type !== 'slider') v = Math.round(v);
+    this.pt[p.id] = v;
+    this.pglide[p.id] = glideSec == null ? null : glideSec;
+    if (glideSec === 0 || p.type === 'list') this.pv[p.id] = v;
+    return true;
+  };
+  Jam.prototype.setFocus = function (styleId) { this.focus = styleId && this.styleMap[styleId] ? styleId : null; };
+  Jam.prototype.setAudition = function (instId) { this.audition = instId && this.instMap[instId] ? instId : null; };
+  Jam.prototype.setSolo = function (ids) { this.solo = ids && ids.length ? ids.slice() : null; };
+  Jam.prototype.setMute = function (id, on) { this.mute[id] = !!on; };
+  Jam.prototype.fireEvent = function (idOrName) {
+    var ev = ST.eventByName(this.P, idOrName);
+    if (!ev) return false;
+    var self = this;
+    this.eventLog.push({ t: this.time, name: ev.name });
+    ev.actions.forEach(function (a) {
+      if (a.do === 'set') self.setParam(a.param, a.value, a.time);
+      else if (a.do === 'pulse') {
+        var before = self.pt[a.param];
+        self.setParam(a.param, a.value, a.time || 0.2);
+        self.timers.push({ at: self.time + a.hold, param: a.param, value: before });
+      } else if (a.do === 'cue') self.cue(a.cue, a.sound, a.when, a.volume);
+      else if (a.do === 'stop') { self.fadeTarget = 0; self.fadeSec = Math.max(0.05, a.fade); }
+      else if (a.do === 'start') { self.fadeTarget = 1; self.fadeSec = Math.max(0.05, a.fade); self.stopped = false; }
+    });
+    return true;
+  };
+
+  // ---------------------------------------------------------------- style switching
+  Jam.prototype.barStartOf = function (beat) {
+    var cb = this.curBar;
+    if (!cb) return 0;
+    if (beat >= cb.start && beat < cb.start + cb.bpb) return cb.start;
+    return cb.start + Math.floor((beat - cb.start) / cb.bpb) * cb.bpb;
+  };
+  Jam.prototype.requestStyle = function (id) {
+    var st = this.styleObj(id);
+    if (!st) return;
+    var e = st.entry, cb = this.curBar, now = this.beat;
+    if (!this.target || !cb) { this.doSwitch(id, Math.max(this.nextBar, now), 'cut', 0); return; }
+    var bpb = cb.bpb, at;
+    var curStart = this.barStartOf(now + 0.1);
+    if (e.mode === 'beat') {
+      at = cb.start + Math.ceil(now + 0.08 - cb.start - 1e-9);
+      if (at <= now) at += 1;
+    } else if (e.mode === 'phrase') {
+      var bis = cb.barInSec + Math.round((curStart - cb.start) / bpb);
+      var left = 4 - (bis % 4);
+      at = curStart + left * bpb;
+    } else {
+      at = curStart + bpb;
+      if (e.fill && at - bpb < this.nextBar - 1e-9) at += bpb;
+    }
+    if (e.mode === 'phrase' && e.fill && at - bpb < this.nextBar - 1e-9) at += 4 * bpb;
+    this.pending = { style: id, at: at, mode: e.mode, bars: e.bars, fill: e.fill && e.mode !== 'beat', crash: e.crash };
+  };
+  Jam.prototype.doSwitch = function (id, at, mode, bars) {
+    var old = this.target, st = this.styleObj(id), self = this;
+    var oldSt = this.styleObj(old);
+    this.target = id;
+    var bpbNew = K.meter(st.meter).bpb;
+    var fadeBeats = mode === 'blend' ? Math.max(1, bars) * bpbNew : mode === 'cut' ? 0.01 : 0.6;
+    // fades
+    var found = false;
+    this.mix.forEach(function (m) {
+      var g = self.mixGain(m, at);
+      if (m.id === id) { m.g0 = g; m.g1 = 1; found = true; } else { m.g0 = g; m.g1 = 0; }
+      m.b0 = at; m.b1 = at + fadeBeats; m.blend = mode === 'blend';
+    });
+    if (!found) this.mix.push({ id: id, g0: 0, g1: 1, b0: at, b1: at + fadeBeats, blend: mode === 'blend' });
+    // tempo glide over the blend
+    this.tempoFrom = mode === 'blend' ? { from: this.tempoNow, b0: at, b1: at + fadeBeats } : null;
+    // drop planned notes after the switch; restart the bar grid there
+    this.q = this.q.filter(function (e) { return e.beat < at - 1e-9; });
+    var sync = oldSt && st && oldSt.meter === st.meter && oldSt.key === st.key && oldSt.scale === st.scale &&
+      JSON.stringify(oldSt.chords) === JSON.stringify(st.chords) && (mode === 'blend' || mode === 'bar') && this.sec && Math.abs(at - this.nextBar) < 1e-6;
+    if (!sync) { this.sec = null; this.secIdx = 0; this.barInSec = 0; this.harmSig = null; }
+    this.nextBar = at;
+    this.switchCrash = !!(this.pending && this.pending.crash) && mode !== 'blend';
+    var band = {};
+    st.band.forEach(function (b) { band[b.inst] = true; });
+    Object.keys(this.channels).forEach(function (cid) {
+      var ch = self.channels[cid];
+      ch.wasActive = false;
+      if (!sync) self.q.push({ beat: at, ch: cid, release: true, ms: 0 });
+      if (!band[cid] && mode !== 'blend') self.q.push({ beat: at, ch: cid, release: true, ms: 0 });
+    });
+    this.q.sort(function (a, b) { return a.beat - b.beat; });
+    this.pending = null;
+    this.eventLog.push({ t: this.time, style: id });
+  };
+  Jam.prototype.mixGain = function (m, beat) {
+    if (m.b1 <= m.b0) return m.g1;
+    var u = clamp01((beat - m.b0) / (m.b1 - m.b0));
+    if (m.g0 === 0 && m.g1 === 1) return eqIn(u);
+    if (m.g0 > 0 && m.g1 === 0) return m.g0 * Math.cos(u * Math.PI / 2);
+    return m.g0 + (m.g1 - m.g0) * u;
+  };
+
+  // ---------------------------------------------------------------- conductor
+  Jam.prototype.harmony = function (st) {
+    var M = this.M.g, keyPc = DM.parsePitchClass(st.key);
+    keyPc = H.mod12(keyPc + Math.round(M.transpose));
+    var scaleId = K.shiftScale(st.scale, Math.round(M.mood));
+    var color = clamp01(st.chords.color + M.color), variety = clamp01(st.chords.variety + M.variety);
+    var prog = H.progression({ custom: st.chords.custom, progression: st.chords.prog, speed: st.chords.speed });
+    var sig = [st.id, keyPc, scaleId, Math.round(color * 10), Math.round(variety * 10), JSON.stringify(prog), st.meter, st.tune.kind, st.tune.seed].join('|');
+    return { keyPc: keyPc, scaleId: scaleId, S: H.scaleInfo(scaleId, keyPc), color: color, variety: variety, prog: prog, sig: sig };
+  };
+  Jam.prototype.sectionType = function (idx, variety) {
+    if (variety < 0.25) return 'A';
+    return ['A', 'A', 'B', 'A'][idx % 4];
+  };
+  Jam.prototype.buildSection = function (st, hm, bpb, sub) {
+    var type = this.sectionType(this.secIdx, hm.variety);
+    var plan = H.planSection({ prog: hm.prog, bpb: bpb, S: hm.S, variety: hm.variety, color: hm.color, seed: this.seed + ':' + st.tune.seed, index: this.secIdx, type: type });
+    var tune = K.TUNES[st.tune.kind] || K.TUNES.lyrical;
+    var theme = H.makeTheme({ plan: plan, S: hm.S, tune: tune, meter: st.meter, bpb: bpb, sub: sub, seed: st.tune.seed + ':' + hm.keyPc + ':' + hm.scaleId, type: type, index: this.secIdx });
+    var pr = H.rngFor(this.seed + ':' + st.tune.seed, 'presence:' + this.secIdx);
+    var themeOn = st.tune.presence >= 0.999 || (this.secIdx === 0 && st.tune.presence >= 0.5) || pr.next() < st.tune.presence;
+    var ms = theme.map(function (n) { return n.m; }).sort(function (a, b) { return a - b; });
+    return { plan: plan, theme: theme, themeOn: themeOn, median: ms.length ? ms[Math.floor(ms.length / 2)] : 72, type: type, bars: plan.bars, sig: hm.sig };
+  };
+
+  Jam.prototype.planBar = function () {
+    var st = this.styleObj(this.target);
+    if (!st) { this.nextBar += 4; return; }
+    var meter = K.meter(st.meter), bpb = meter.bpb, sub = meter.sub;
+    var hm = this.harmony(st);
+    if (!this.sec || this.barInSec >= this.sec.bars) {
+      if (this.sec) this.secIdx++;
+      this.barInSec = 0;
+      this.sec = this.buildSection(st, hm, bpb, sub);
+    } else if (this.sec.sig !== hm.sig) {
+      var keep = this.barInSec;
+      this.sec = this.buildSection(st, hm, bpb, sub);
+      this.barInSec = Math.min(keep, this.sec.bars - 1);
+    }
+    var sec = this.sec, start = this.nextBar, b0 = this.barInSec * bpb, b1 = b0 + bpb;
+    var E = clamp01(st.energy + this.M.g.energy);
+    // chords overlapping this bar (times relative to the bar)
+    var chords = [], cs = sec.plan.chords, next = null;
+    for (var i = 0; i < cs.length; i++) {
+      var c = cs[i];
+      if (c.t < b1 - 1e-9 && c.t + c.len > b0 + 1e-9) chords.push({ t: c.t - b0, len: c.len, ch: c.ch });
+      if (c.t >= b1 - 1e-9 && !next) next = c.ch;
+    }
+    if (!next) next = cs[0].ch;
+    if (!chords.length) chords.push({ t: 0, len: bpb, ch: cs[0].ch });
+    var theme = [];
+    sec.theme.forEach(function (n) { if (n.t >= b0 - 1e-9 && n.t < b1 - 1e-9) theme.push({ t: n.t - b0, d: n.d, m: n.m, v: n.v, strong: n.strong }); });
+    var phraseBar = this.barInSec % 4, isPhraseEnd = phraseBar === 3 || this.barInSec === sec.bars - 1;
+    var rg = H.rngFor(this.seed, 'bar:' + this.barIdx);
+    var fill = false;
+    if (this.pending && this.pending.fill && Math.abs(this.pending.at - (start + bpb)) < 1e-6) fill = true;
+    else if (isPhraseEnd) fill = rg.next() < (this.barInSec === sec.bars - 1 ? 0.3 + 0.5 * E : 0.08 + 0.3 * E);
+    var crash = (this.barInSec === 0 && this.secIdx > 0 && E > 0.45) || (this.lastFill && E > 0.35) || (this.switchCrash && E > 0.2);
+    this.switchCrash = false;
+    this.lastFill = fill;
+    var ctx = {
+      bar: this.barIdx, barInSec: this.barInSec, secBars: sec.bars, secIdx: this.secIdx, secType: sec.type,
+      phraseBar: phraseBar, isPhraseEnd: isPhraseEnd, meter: st.meter, bpb: bpb, sub: sub, tempo: this.tempoNow,
+      chords: chords, next: next, S: hm.S, keyPc: hm.keyPc, theme: theme, themeOn: sec.themeOn, themeMedian: sec.median,
+      energy: E, fill: fill, crash: crash, restart: false, from: 0
+    };
+    this.curBar = { start: start, bpb: bpb, sub: sub, barInSec: this.barInSec, chord: chords[0].ch.label, chords: chords, E: E, sec: sec.type, secIdx: this.secIdx, scale: hm.scaleId, keyPc: hm.keyPc };
+    if (this.logNotes) {
+      this.barLog = this.barLog || [];
+      if (this.barLog.length < 4000) this.barLog.push({ start: start, bpb: bpb, style: st.id, chords: chords.map(function (c) { return { t: c.t, len: c.len, pcs: c.ch.pcs, bass: c.ch.bass, label: c.ch.label }; }), mel: hm.S.mel, pcs: hm.S.pcs, chromatic: hm.S.chromatic, keyPc: hm.keyPc });
+    }
+    this.generateBar(ctx, st, start);
+    this.barInSec++; this.barIdx++;
+    this.nextBar = start + bpb;
+  };
+
+  // which instruments play, with which feel, and queue their notes
+  Jam.prototype.bandNow = function () {
+    var out = {}, self = this;
+    this.mix.forEach(function (m) {
+      var s = self.styleObj(m.id);
+      if (!s) return;
+      var fadingOut = m.id !== self.target;
+      if (fadingOut && (m.g1 > 0 || !m.blend || self.beat >= m.b1)) return;
+      s.band.forEach(function (b) { if (!out[b.inst] || m.id === self.target) out[b.inst] = { slot: b, style: s, fading: fadingOut }; });
+    });
+    if (this.audition && !out[this.audition]) {
+      var tg = this.styleObj(this.target);
+      if (tg) out[this.audition] = { slot: { inst: this.audition, level: 1, enter: 0 }, style: tg, fading: false };
+    }
+    return out;
+  };
+  Jam.prototype.generateBar = function (ctx, st, start) {
+    var band = this.bandNow(), self = this, events = [];
+    var swing = clamp01(st.swing + this.M.g.swing), hum = st.humanize;
+    Object.keys(this.channels).forEach(function (id) {
+      var ch = self.channels[id], b = band[id], inst = ch.inst;
+      var mi = self.M.inst[id];
+      var on = !!b && (!mi || mi.on);
+      if (on && !b.fading) {
+        var thr = b.slot.enter - (ch.wasActive ? 0.04 : 0);
+        if (ctx.energy < thr && id !== self.audition) on = false;
+      }
+      ch.active = on;
+      if (!on) { ch.wasActive = false; return; }
+      var techId = ST.techniqueOf(inst, b.style, mi && mi.tech);
+      var tech = K.TECH[techId];
+      if (!tech) return;
+      var f = inst.feel;
+      var feel = { busy: clamp01(f.busy + (mi ? mi.busy : 0)), dyn: clamp01(f.dyn + (mi ? mi.dyn : 0)), reg: Math.round(f.reg + (mi ? mi.reg : 0)),
+        len: clamp01(f.len + (mi ? mi.len : 0)), expr: f.expr, timing: f.timing };
+      ctx.restart = !ch.wasActive;
+      ch.techNow = techId;
+      ch.trim = tech.trim ? DM.dbToGain(tech.trim) : 1;
+      var rg = H.rngFor(self.seed + ':' + id, 'b' + self.barIdx);
+      var evs;
+      try { evs = P.generate(ctx, inst, ch.state, tech, feel, rg); } catch (e) { evs = []; self.lastError = String(e && e.message || e); }
+      ch.wasActive = true;
+      var hr = H.rngFor(self.seed + ':' + id, 'h' + self.barIdx);
+      var timingMs = -f.timing * 22;
+      evs.forEach(function (e) {
+        var t = e.t, d = e.d;
+        if (ctx.sub === 2 && swing > 0.001) {
+          var t2 = swingWarp(t, swing, st.swing16), e2 = swingWarp(t + d, swing, st.swing16);
+          t = t2; d = Math.max(0.03, e2 - t2);
+        }
+        var isDrum = !!e.drums;
+        var jit = (hr.next() * 2 - 1) * hum * (isDrum ? 7 : 13);
+        var vel = clamp(e.v * (1 + (hr.next() * 2 - 1) * hum * 0.09), 0.03, 1);
+        var base = { beat: start + t, ch: id, d: d, vel: vel, over: e.over || null, ms: timingMs + jit };
+        if (isDrum) { e.drums.forEach(function (dn) { events.push(Object.assign({ drum: dn }, base)); }); return; }
+        var notes = e.notes || [], sr = e.strum;
+        if (sr && notes.length > 1) {
+          var order = sr.dir >= 0 ? notes.slice() : notes.slice().reverse();
+          order.forEach(function (m, k) { var o = Object.assign({}, base); o.note = m; o.ms = base.ms + k * sr.ms; o.vel = vel * (1 - 0.04 * k); events.push(o); });
+        } else notes.forEach(function (m) { var o = Object.assign({}, base); o.note = m; events.push(o); });
+      });
+    });
+    events.forEach(function (e) { self.q.push(e); });
+    this.q.sort(function (a, b) { return a.beat - b.beat; });
+  };
+  // piecewise-linear swing: off-beat eighths (or sixteenths) move later
+  function swingWarp(t, s, sixteenth) {
+    var unit = sixteenth ? 0.5 : 1, n = Math.floor(t / unit + 1e-9), f = t / unit - n;
+    var mid = 0.5 + s / 6;
+    var g = f <= 0.5 ? f * (mid / 0.5) : mid + (f - 0.5) * ((1 - mid) / 0.5);
+    return (n + g) * unit;
+  }
+  DM.swingWarp = swingWarp;
+
+  // ---------------------------------------------------------------- cues (event stingers)
+  Jam.prototype.cue = function (type, sound, when, volume) {
+    var c = K.CUES[type] || K.CUES.chime;
+    sound = sound || c.sound;
+    var cb = this.curBar, bpb = cb ? cb.bpb : 4;
+    var at = this.beat + 0.05;
+    if (when === 'beat') at = Math.ceil(this.beat + 0.05);
+    else if (when === 'bar' && cb) at = this.barStartOf(this.beat + 0.05) + bpb;
+    var key = 'cue:' + sound + ':' + type;
+    if (!this.cueCh[key]) {
+      var role = type === 'hit' || type === 'roll' ? 'accent' : type === 'swell' ? 'pad' : 'melody';
+      var inst = ST.newInstrument({ id: key, sound: sound, kit: sound === 'drums' ? 'orchestral' : null, role: sound === 'drums' ? 'accent' : role, mix: { vol: 0.75, rev: 0.45 } });
+      this.cueCh[key] = new Channel(this, inst);
+    }
+    var ch = this.cueCh[key];
+    ch.cueVol = volume == null ? 0.8 : volume;
+    var hm = cb ? { key: cb.keyPc, ch: cb.chords[0].ch } : { key: 0, ch: H.makeChord(0, [0, 4, 7]) };
+    var S = H.scaleInfo(cb ? cb.scale : 'major', hm.key), minor = S.minor, tonic = 60 + H.mod12(hm.key - 60), evs = [];
+    var triad = [0, minor ? 3 : 4, 7];
+    var push = function (t, m, d, v, over) { evs.push({ beat: at + t, ch: key, note: m, d: d, vel: v, over: over || null, ms: 0, cue: true }); };
+    var drum = function (t, n, v) { evs.push({ beat: at + t, ch: key, drum: n, d: 0.5, vel: v, ms: 0, cue: true }); };
+    if (sound === 'drums') {
+      if (type === 'roll') { for (var r = 0; r < 12; r++) drum(r / 6, 'snare', 0.3 + 0.6 * r / 12); drum(2, 'crash', 0.95); drum(2, 'boom', 0.9); }
+      else { drum(0, 'boom', 1); drum(0, 'crash', 0.8); }
+    } else if (type === 'rise') {
+      var lad = H.voice(hm.ch, 'ladder', 72, { lo: 55, hi: 100 }).ladder.concat([]);
+      lad.slice(0, 8).forEach(function (m, k) { push(k / 8, m, k === 7 ? 2 : 0.5, 0.55 + 0.05 * k); });
+    } else if (type === 'fanfare') {
+      var t5 = tonic - 5;
+      [0, 1 / 3, 2 / 3].forEach(function (t) { push(t, t5, 0.3, 0.75); });
+      triad.concat([12]).forEach(function (iv) { push(1, tonic + iv, 2, 0.85); });
+    } else if (type === 'hit') {
+      var v = H.voice(hm.ch, 'close', 55, { lo: 40, hi: 72 }).notes;
+      v.forEach(function (m) { push(0, m, 1.5, 0.95); });
+      push(0, tonic - 24 + (tonic - 24 < 28 ? 12 : 0), 2, 0.9);
+    } else if (type === 'chime') {
+      push(0, tonic + 19, 0.6, 0.7); push(0.5, tonic + 24, 2, 0.75);
+    } else if (type === 'fall') {
+      var sc = [];
+      for (var mm = tonic + 14; mm >= tonic - 3 && sc.length < 6; mm--) if (S.inScale[H.mod12(mm)]) sc.push(mm);
+      sc.forEach(function (m, k) { push(k * 0.5, m, 0.6, 0.7 - 0.05 * k); });
+      push(sc.length * 0.5, tonic - 12, 2.5, 0.7);
+    } else if (type === 'swell') {
+      H.voice(hm.ch, 'open', 62, { lo: 45, hi: 84 }).notes.forEach(function (m) { push(0, m, 4, 0.75, { a: 1.6, attack: 1.6, r: 1.5 }); });
+    }
+    var self = this;
+    evs.forEach(function (e) { self.q.push(e); });
+    this.q.sort(function (a, b) { return a.beat - b.beat; });
+    this.duckUntil = at + 2; this.duckFrom = at;
+    this.eventLog.push({ t: this.time, cue: type });
+  };
+
+  // ---------------------------------------------------------------- audio
+  Jam.prototype.process = function (outL, outR, n) {
+    if (n > MAXB) {
+      for (var o = 0; o < n; o += MAXB) { var m = Math.min(MAXB, n - o); this.process(outL.subarray(o, o + m), outR.subarray(o, o + m), m); }
+      return;
+    }
+    var sr = this.sr, dt = n / sr, i, self = this;
+    // 1. parameters
+    for (var pid in this.pt) {
+      var p = this.paramMap[pid];
+      if (!p) continue;
+      var tgt = this.pt[pid], cur = this.pv[pid];
+      if (tgt === cur) continue;
+      var tau = this.pglide[pid] != null ? this.pglide[pid] / 3 : p.smooth / 3;
+      if (tau <= 0) { this.pv[pid] = tgt; continue; }
+      var diff = tgt - cur;
+      if (p.wrap) { var span = p.max - p.min; if (diff > span / 2) diff -= span; else if (diff < -span / 2) diff += span; }
+      cur += diff * (1 - Math.exp(-dt / tau));
+      if (p.wrap) { var sp = p.max - p.min; while (cur < p.min) cur += sp; while (cur > p.max) cur -= sp; }
+      if (Math.abs(tgt - cur) < 1e-4 * (p.max - p.min)) cur = tgt;
+      this.pv[pid] = cur;
+    }
+    for (i = this.timers.length - 1; i >= 0; i--) if (this.time >= this.timers[i].at) { this.setParam(this.timers[i].param, this.timers[i].value, 1); this.timers.splice(i, 1); }
+    this.M = DM.evalLinks(this.P, this.pv);
+    var G = this.M.g;
+    // 2. style choice
+    var want = this.desiredStyle();
+    if (want && want !== this.target && (!this.pending || this.pending.style !== want)) this.requestStyle(want);
+    if (this.pending && want === this.target && this.pending.style !== want) this.pending = null;
+    var st = this.styleObj(this.target);
+    // 3. tempo
+    var tempoT = st ? clamp(st.tempo * G.speed, 30, 260) : 100;
+    if (this.tempoFrom && this.beat < this.tempoFrom.b1) {
+      var u = clamp01((this.beat - this.tempoFrom.b0) / (this.tempoFrom.b1 - this.tempoFrom.b0));
+      this.tempoNow = this.tempoFrom.from + (tempoT - this.tempoFrom.from) * u * u * (3 - 2 * u);
+    } else { this.tempoFrom = null; this.tempoNow += (tempoT - this.tempoNow) * (1 - Math.exp(-dt / 0.6)); }
+    var bps = this.tempoNow / 60 / sr, b0 = this.beat, b1 = b0 + n * bps;
+    // 4. switches and planning (freeze = let notes ring out but start nothing new, used when baking loops)
+    if (this.freeze) this.q = [];
+    if (!this.freeze && this.pending && this.pending.at <= b1 + LOOK) this.doSwitch(this.pending.style, this.pending.at, this.pending.mode, this.pending.bars);
+    var guard = 0;
+    while (!this.freeze && st && this.nextBar <= b1 + LOOK && guard++ < 4) { this.planBar(); st = this.styleObj(this.target); }
+    // 5. emit due notes
+    var msB = this.tempoNow / 60000;
+    while (this.q.length && this.q[0].beat + Math.min(0, this.q[0].ms) * msB < b1) {
+      var e = this.q[0];
+      var eb = e.beat + e.ms * msB;
+      if (eb >= b1) {
+        // a late (laid-back) note: move it to the right place in the queue
+        this.q.shift(); e.beat = eb; e.ms = 0;
+        var k = 0; while (k < this.q.length && this.q[k].beat <= eb) k++;
+        this.q.splice(k, 0, e);
+        if (k === 0) break;
+        continue;
+      }
+      this.q.shift();
+      var ch = this.channels[e.ch] || this.cueCh[e.ch];
+      if (!ch) continue;
+      var startS = this.sample + Math.max(0, Math.round((eb - b0) / bps));
+      if (e.release) { this.startQ.push({ ch: ch, release: true, at: startS }); continue; }
+      var durSec = Math.max(0.03, e.d * 60 / this.tempoNow);
+      var over = e.over, ip = ch.instr.p;
+      // short notes on slow-attack sounds (spiccato strings, stabs): speed the attack up so they still speak
+      if (ip.a && !e.drum && durSec < ip.a * 2.5 && !(over && over.a)) {
+        over = over ? Object.assign({}, over) : {};
+        over.a = Math.max(0.004, Math.min(ip.a, durSec * 0.22));
+        if (ip.fa) over.fa = Math.min(ip.fa, over.a * 1.5);
+      }
+      var voice = null;
+      try { voice = ch.instr.play(e.drum || e.note, e.vel, durSec, ch.rng, over); } catch (err) { voice = null; }
+      if (!voice) continue;
+      this.startQ.push({ ch: ch, voice: voice, at: startS });
+      ch.hits++;
+      if (this.logNotes) this.noteLog.push({ t: this.time + (startS - this.sample) / sr, beat: eb, inst: e.ch, p: e.drum || e.note, v: +e.vel.toFixed(2), d: +e.d.toFixed(3) });
+    }
+    var end = this.sample + n, keepQ = [];
+    for (i = 0; i < this.startQ.length; i++) {
+      var s = this.startQ[i];
+      if (s.at < end) {
+        if (s.release) s.ch.release();
+        else { s.voice._off = Math.max(0, s.at - this.sample); s.ch.voices.push(s.voice); }
+      } else keepQ.push(s);
+    }
+    this.startQ = keepQ;
+    // 6. buses
+    var dryL = this.dryL, dryR = this.dryR, revL = this.revL, revR = this.revR, dlyL = this.dlyL, dlyR = this.dlyR;
+    for (i = 0; i < n; i++) { dryL[i] = dryR[i] = revL[i] = revR[i] = dlyL[i] = dlyR[i] = 0; }
+    var space = st ? clamp01(st.space + G.space) : 0.4;
+    this.spaceNow += (space - this.spaceNow) * (1 - Math.exp(-dt / 0.5));
+    var duck = this.duckUntil != null && b0 >= this.duckFrom && b0 < this.duckUntil ? 0.72 : 1;
+    this.duck += (duck - this.duck) * (1 - Math.exp(-dt / 0.15));
+    // style gains per instrument: target fades in (equal power), old styles fade out; an instrument in both
+    // keeps playing and only moves from its old level to its new level (no dip in the middle of a blend)
+    var gains = {}, tgtSt = st, tgtLv = {}, oldLv = {}, uT = 1;
+    this.mix.forEach(function (mx) {
+      var s2 = self.styleObj(mx.id);
+      if (!s2) return;
+      if (mx.id === self.target) {
+        uT = mx.b1 <= mx.b0 ? 1 : clamp01((b0 - mx.b0) / (mx.b1 - mx.b0));
+        s2.band.forEach(function (b) { tgtLv[b.inst] = b.level; });
+      }
+    });
+    this.mix.forEach(function (mx) {
+      var s2 = self.styleObj(mx.id), g = self.mixGain(mx, b0);
+      if (!s2) return;
+      s2.band.forEach(function (b) {
+        if (mx.id === self.target) return;
+        if (tgtLv[b.inst] != null) oldLv[b.inst] = Math.max(oldLv[b.inst] || 0, b.level);
+        else gains[b.inst] = Math.max(gains[b.inst] || 0, b.level * g);
+      });
+    });
+    var tgMix = null;
+    this.mix.forEach(function (mx) { if (mx.id === self.target) tgMix = mx; });
+    Object.keys(tgtLv).forEach(function (id) {
+      if (oldLv[id] != null) gains[id] = oldLv[id] + (tgtLv[id] - oldLv[id]) * uT;
+      else gains[id] = tgtLv[id] * (tgMix ? self.mixGain(tgMix, b0) : 1);
+    });
+    if (this.audition && tgtSt) gains[this.audition] = Math.max(gains[this.audition] || 0, 1);
+    this.mix = this.mix.filter(function (mx) { return mx.id === self.target || b0 < mx.b1 || mx.g1 > 0; });
+    for (var cid in this.channels) this.renderChannel(this.channels[cid], n, gains[cid] || 0, false);
+    for (var qk in this.cueCh) this.renderChannel(this.cueCh[qk], n, this.cueCh[qk].cueVol || 0.8, true);
+    // 7. effects
+    var fxL = this.fxL, fxR = this.fxR;
+    for (i = 0; i < n; i++) { fxL[i] = 0; fxR[i] = 0; }
+    var decay = 0.9 + 4.2 * this.spaceNow;
+    if (Math.abs(decay - this.revDecay) > 0.05) { this.reverb.setDecay(decay, 0.45); this.revDecay = decay; }
+    this.reverb.process(revL, revR, fxL, fxR, n);
+    for (i = 0; i < n; i++) { dryL[i] += fxL[i] * 0.75; dryR[i] += fxR[i] * 0.75; fxL[i] = 0; fxR[i] = 0; }
+    this.delay.set(0.75 * 60 / this.tempoNow, 0.32, 0.4);
+    this.delay.process(dlyL, dlyR, fxL, fxR, n);
+    // 8. master
+    var vol = this.P.master.volume * clamp(G.volume, 0, 2);
+    var v0 = this.volNow; this.volNow += (vol - this.volNow) * (1 - Math.exp(-dt / 0.08));
+    var f0 = this.masterFade;
+    if (this.masterFade !== this.fadeTarget) {
+      var stepF = dt / Math.max(0.02, this.fadeSec);
+      this.masterFade = this.fadeTarget > this.masterFade ? Math.min(this.fadeTarget, this.masterFade + stepF) : Math.max(this.fadeTarget, this.masterFade - stepF);
+    }
+    var ga = v0 * f0, gb = this.volNow * this.masterFade, gs = (gb - ga) / n, gg = ga;
+    for (i = 0; i < n; i++) {
+      outL[i] = (dryL[i] + fxL[i] * 0.55) * gg;
+      outR[i] = (dryR[i] + fxR[i] * 0.55) * gg;
+      gg += gs;
+    }
+    this.master(outL, outR, n, dt, st, G);
+    // leveler: calm and intense styles end up closer in loudness (style switches never jump much)
+    if (this.P.master.leveler !== false) {
+      var msq = 0;
+      for (i = 0; i < n; i++) msq += outL[i] * outL[i] + outR[i] * outR[i];
+      msq /= 2 * n;
+      var lg = this.levelG || 1, pre = msq / (lg * lg);
+      this.levMs = this.levMs == null ? pre : this.levMs + (pre - this.levMs) * (1 - Math.exp(-dt / 1.5));
+      var lvlDb = 10 * Math.log10(this.levMs + 1e-12);
+      var want = lvlDb < -50 ? lg : DM.dbToGain(clamp((LEVEL_TARGET - lvlDb) * 0.5, -6, 6));
+      var lg1 = lg + (want - lg) * (1 - Math.exp(-dt / 2.5));
+      var lstep = (lg1 - lg) / n, lgg = lg;
+      for (i = 0; i < n; i++) { outL[i] *= lgg; outR[i] *= lgg; lgg += lstep; }
+      this.levelG = lg1;
+    }
+    this.limiter.process(outL, outR, n);
+    this.beat = b1; this.sample += n; this.time += dt;
+  };
+
+  Jam.prototype.renderChannel = function (ch, n, styleGain, isCue) {
+    var inst = ch.inst, mi = this.M.inst[ch.id], dt = n / this.sr, s;
+    var muted = !isCue && (this.mute[ch.id] || (this.solo && this.solo.indexOf(ch.id) < 0));
+    var vol = inst.mix.vol / 0.7;
+    var target = muted ? 0 : styleGain * vol * vol * (mi ? clamp(mi.volume, 0, 3) : 1) * (isCue ? 1 : this.duck);
+    var g0 = ch.gainNow, g1 = g0 + (target - g0) * (1 - Math.exp(-dt / 0.06));
+    if (Math.abs(g1 - target) < 1e-4) g1 = target;
+    ch.gainNow = g1;
+    if (!ch.voices.length) { ch.level *= 0.85; return; }
+    var L = this.chL, R = this.chR, tmp = this.tmp, vs = ch.voices, i;
+    for (s = 0; s < n; s++) { L[s] = 0; R[s] = 0; }
+    var maxV = ch.instr.maxVoices, alive = 0;
+    for (i = vs.length - 1; i >= 0; i--) if (!vs[i].killing) { alive++; if (alive > maxV) vs[i].killing = true; }
+    for (i = 0; i < vs.length; i++) {
+      var v = vs[i], off = v._off || 0;
+      if (off < n) v.render(L, R, off, n - off, tmp);
+      v._off = 0;
+    }
+    for (i = vs.length - 1; i >= 0; i--) if (vs[i].done) vs.splice(i, 1);
+    if (g0 < 1e-5 && g1 < 1e-5) { ch.level *= 0.85; return; }
+    var ip = ch.instr.p;
+    if (ip.lowpass) {
+      ch.iL.set(ip.lowpass, 0.707); ch.iR.set(ip.lowpass, 0.707);
+      for (s = 0; s < n; s++) { L[s] = ch.iL.process(L[s], 0); R[s] = ch.iR.process(R[s], 0); }
+    }
+    if (ip.drive) {
+      var gd = 1 + 24 * ip.drive, sq = Math.sqrt(gd);
+      for (s = 0; s < n; s++) { L[s] = Math.tanh(L[s] * gd) / sq; R[s] = Math.tanh(R[s] * gd) / sq; }
+    }
+    if (ip.crush) {
+      var cq = Math.pow(2, ip.crush - 1);
+      for (s = 0; s < n; s++) { L[s] = Math.round(L[s] * cq) / cq; R[s] = Math.round(R[s] * cq) / cq; }
+    }
+    var tone = clamp01(inst.mix.tone + (mi ? mi.tone : 0));
+    var cut = 20000 * Math.pow(0.03, 1 - tone);
+    ch.toneNow += (cut - ch.toneNow) * (1 - Math.exp(-dt / 0.05));
+    if (ch.toneNow < 17000) {
+      ch.fL.set(ch.toneNow, 0.707); ch.fR.set(ch.toneNow, 0.707);
+      for (s = 0; s < n; s++) { L[s] = ch.fL.process(L[s], 0); R[s] = ch.fR.process(R[s], 0); }
+    }
+    var rv = clamp01(inst.mix.rev + (mi ? mi.reverb : 0)) * (0.35 + 1.1 * this.spaceNow);
+    ch.revNow += (rv - ch.revNow) * (1 - Math.exp(-dt / 0.1));
+    var echo = inst.mix.echo * 0.8;
+    var norm = ch.norm * (ch.trim || 1), pl = ch.panL * norm, pr = ch.panR * norm;
+    var ga = g0, gs = (g1 - g0) / n, peak = 0, rvn = ch.revNow;
+    var dryL = this.dryL, dryR = this.dryR, revL = this.revL, revR = this.revR, dlyL = this.dlyL, dlyR = this.dlyR;
+    for (s = 0; s < n; s++) {
+      var l = L[s] * ga * pl, r = R[s] * ga * pr;
+      dryL[s] += l; dryR[s] += r;
+      revL[s] += l * rvn; revR[s] += r * rvn;
+      if (echo > 0) { dlyL[s] += l * echo; dlyR[s] += r * echo; }
+      var ab = Math.abs(l) + Math.abs(r);
+      if (ab > peak) peak = ab;
+      ga += gs;
+    }
+    ch.level = Math.max(peak, ch.level * 0.85);
+  };
+
+  // master chain: muffle, brightness (cut below 0.5, air above), old tape (wobble, crackle, bits)
+  Jam.prototype.master = function (L, R, n, dt, st, G) {
+    var i, sr = this.sr;
+    var muf = clamp01(G.muffle);
+    this.muffleNow += (muf - this.muffleNow) * (1 - Math.exp(-dt / 0.15));
+    if (this.muffleNow > 0.003) {
+      var mc = 20000 * Math.pow(0.025, this.muffleNow);
+      this.mfL.set(mc, 0.8); this.mfR.set(mc, 0.8);
+      for (i = 0; i < n; i++) { L[i] = this.mfL.process(L[i], 0); R[i] = this.mfR.process(R[i], 0); }
+    }
+    var br = st ? clamp01(st.bright + G.brightness) : 0.5;
+    this.brightNow += (br - this.brightNow) * (1 - Math.exp(-dt / 0.2));
+    var b = this.brightNow;
+    if (b < 0.49) {
+      var cut = 20000 * Math.pow(0.06, (0.5 - b) * 2);
+      this.tnL.set(cut, 0.707); this.tnR.set(cut, 0.707);
+      for (i = 0; i < n; i++) { L[i] = this.tnL.process(L[i], 0); R[i] = this.tnR.process(R[i], 0); }
+    } else if (b > 0.51) {
+      var air = (b - 0.5) * 0.9;
+      this.hpL.set(3000, 0.7); this.hpR.set(3000, 0.7);
+      for (i = 0; i < n; i++) { L[i] += this.hpL.process(L[i], 2) * air; R[i] += this.hpR.process(R[i], 2) * air; }
+    }
+    var lf = st ? clamp01(st.lofi + G.lofi) : 0;
+    this.lofiNow += (lf - this.lofiNow) * (1 - Math.exp(-dt / 0.3));
+    lf = this.lofiNow;
+    var N = this.lfN, bL = this.lfL, bR = this.lfR;
+    var depth = lf * 0.0025 * sr, base = 0.004 * sr, rng = this.lfRng || (this.lfRng = new DM.Rng(DM.hashString('lofi:' + this.seed)));
+    var q = lf > 0.4 ? Math.pow(2, 15 - (lf - 0.4) * 12) : 0;
+    for (i = 0; i < n; i++) {
+      bL[this.lfW] = L[i]; bR[this.lfW] = R[i];
+      if (lf > 0.002) {
+        var d = base + depth * (0.5 + 0.5 * Math.sin(this.lfPh)) + depth * 0.15 * Math.sin(this.lfPh2);
+        this.lfPh += 6.283185307 * 0.55 / sr; this.lfPh2 += 6.283185307 * 6.3 / sr;
+        var rp = this.lfW - d; if (rp < 0) rp += N;
+        var i0 = Math.floor(rp), fr = rp - i0, i1 = (i0 + 1) % N;
+        var yl = bL[i0] + (bL[i1] - bL[i0]) * fr, yr = bR[i0] + (bR[i1] - bR[i0]) * fr;
+        if (rng.next() < lf * 7 / sr) this.crk = (0.03 + 0.12 * rng.next()) * lf * (rng.next() < 0.5 ? -1 : 1);
+        var hiss = (rng.next() - 0.5) * 0.005 * lf;
+        yl += this.crk + hiss; yr += this.crk * 0.8 + hiss; this.crk *= 0.92;
+        if (q) { yl = Math.round(yl * q) / q; yr = Math.round(yr * q) / q; }
+        var w = Math.min(1, lf * 4);
+        L[i] = L[i] * (1 - w) + yl * w; R[i] = R[i] * (1 - w) + yr * w;
+      }
+      this.lfW = (this.lfW + 1) % N;
+    }
+  };
+
+  // ---------------------------------------------------------------- status for UIs
+  Jam.prototype.status = function () {
+    var self = this, st = this.styleObj(this.target), cb = this.curBar;
+    var band = this.bandNow(), chans = [];
+    Object.keys(this.channels).forEach(function (id) {
+      var ch = self.channels[id], b = band[id], mi = self.M.inst[id], why = '';
+      if (!b) why = 'not in this style';
+      else if (mi && !mi.on) why = 'off (link)';
+      else if (!ch.active && cb) why = 'waits for energy ' + b.slot.enter.toFixed(2);
+      chans.push({ id: id, level: ch.level, gain: ch.gainNow, active: ch.active, why: why, tech: ch.techNow || null, voices: ch.voices.length, hits: ch.hits });
+    });
+    var blend = this.mix.map(function (m) { return { id: m.id, g: self.mixGain(m, self.beat) }; });
+    var sc = cb ? K.SCALES[cb.scale] : null;
+    return {
+      time: this.time, beat: this.beat, tempo: this.tempoNow, style: this.target, styleName: st ? st.name : null, focus: this.focus, audition: this.audition,
+      pending: this.pending ? { style: this.pending.style, inBeats: Math.max(0, this.pending.at - this.beat) } : null, blend: blend,
+      meter: st ? st.meter : '4/4', bar: cb ? cb.barInSec : 0, section: cb ? cb.sec : 'A', secIdx: cb ? cb.secIdx : 0,
+      beatInBar: cb ? Math.max(0, this.beat - cb.start) : 0, chord: cb ? this.chordNow() : '-', key: cb ? DM.NOTE_NAMES[cb.keyPc] : '-', scale: sc ? sc.name : '-',
+      energy: cb ? cb.E : 0, params: Object.assign({}, this.pv), targets: Object.assign({}, this.pt), mods: this.M.g, styleBy: this.M.styleBy,
+      channels: chans, limiter: this.limiter.gr, fade: this.masterFade, error: this.lastError || null
+    };
+  };
+  Jam.prototype.chordNow = function () {
+    var cb = this.curBar;
+    if (!cb) return '-';
+    var t = this.beat - cb.start, cs = cb.chords, lab = cs[0].ch.label;
+    for (var i = 0; i < cs.length; i++) if (t >= cs[i].t - 1e-9) lab = cs[i].ch.label;
+    return lab;
+  };
+
+  // ---------------------------------------------------------------- seamless loop of one style (for game engines)
+  // The style plays `bars` bars after a pre-roll that settles the leveler; the ring-out after the last bar is
+  // added onto the start, so looping the file sounds continuous. opts: params{}, seed
+  DM.bakeLoop = function (preset, styleId, bars, sr, opts) {
+    opts = opts || {};
+    var jam = new Jam(preset, sr, { seed: opts.seed, params: opts.params, focus: styleId });
+    var st = jam.styleObj(styleId);
+    if (!st) return null;
+    var bl = new Float32Array(128), br = new Float32Array(128), i;
+    for (i = 0; i < Math.round(6 * sr / 128); i++) jam.process(bl, br, 128);
+    var lev = jam.levelG, levMs = jam.levMs;
+    jam.reset(); jam.clearFx(); jam.levelG = lev; jam.levMs = levMs;
+    var bpb = K.meter(st.meter).bpb, beats = bars * bpb;
+    var L = [], R = [], n = 0;
+    while (jam.beat < beats - 1e-9) {
+      var bps = jam.tempoNow / 60 / sr, need = Math.max(1, Math.min(128, Math.ceil((beats - jam.beat) / bps - 1e-6)));
+      jam.process(bl.subarray(0, need), br.subarray(0, need), need);
+      L.push(bl.slice(0, need)); R.push(br.slice(0, need)); n += need;
+    }
+    jam.freeze = true;
+    var tailN = Math.round((opts.tail || 4) * sr), TL = new Float32Array(tailN), TR = new Float32Array(tailN);
+    for (i = 0; i < tailN; i += 128) { var m = Math.min(128, tailN - i); jam.process(bl.subarray(0, m), br.subarray(0, m), m); TL.set(bl.subarray(0, m), i); TR.set(br.subarray(0, m), i); }
+    var outL = new Float32Array(n), outR = new Float32Array(n), o = 0;
+    for (i = 0; i < L.length; i++) { outL.set(L[i], o); outR.set(R[i], o); o += L[i].length; }
+    for (i = 0; i < tailN && i < n; i++) { outL[i] += TL[i]; outR[i] += TR[i]; }
+    for (i = 0; i < n; i++) { outL[i] = DM.softclip(outL[i]); outR[i] = DM.softclip(outR[i]); }
+    return { L: outL, R: outR, seconds: n / sr, bars: bars, tempo: jam.tempoNow };
+  };
+
+  // ---------------------------------------------------------------- offline render
+  // opts: seconds, params{}, timeline:[{t, set:{name:v}, ramp:{name:v}, dur, event, focus}], focus, seed, tail, logNotes, block
+  DM.renderJam = function (preset, sr, opts) {
+    opts = opts || {};
+    var jam = new Jam(preset, sr, { seed: opts.seed, params: opts.params, focus: opts.focus, logNotes: !!opts.logNotes });
+    var tl = (opts.timeline || []).slice().sort(function (a, b) { return a.t - b.t; }), ti = 0, ramps = [];
+    var block = opts.block || 128, secs = opts.seconds || 30, total = Math.round(secs * sr), tail = opts.tail == null ? 2 : opts.tail;
+    var L = new Float32Array(total + Math.round(tail * sr)), R = new Float32Array(L.length);
+    var bl = new Float32Array(block), br = new Float32Array(block);
+    var styles = [];
+    for (var pos = 0; pos < L.length; pos += block) {
+      var t = pos / sr;
+      while (ti < tl.length && tl[ti].t <= t + 1e-9) {
+        var e = tl[ti++];
+        if (e.set) for (var k in e.set) jam.setParam(k, e.set[k], e.glide);
+        if (e.ramp) for (var k2 in e.ramp) { var pr = jam.paramRef(k2); if (pr) ramps.push({ p: pr.id, from: jam.pt[pr.id], to: e.ramp[k2], t0: t, dur: Math.max(0.01, e.dur || 4) }); }
+        if (e.event) jam.fireEvent(e.event);
+        if (e.focus !== undefined) jam.setFocus(e.focus);
+      }
+      for (var r = ramps.length - 1; r >= 0; r--) {
+        var rp = ramps[r], u = Math.min(1, (t - rp.t0) / rp.dur);
+        jam.setParam(rp.p, rp.from + (rp.to - rp.from) * u, 0.05);
+        if (u >= 1) ramps.splice(r, 1);
+      }
+      if (pos >= total && jam.fadeTarget !== 0) { jam.fadeTarget = 0; jam.fadeSec = Math.max(0.3, tail * 0.8); }
+      var m = Math.min(block, L.length - pos);
+      jam.process(bl, br, block);
+      L.set(m === block ? bl : bl.subarray(0, m), pos); R.set(m === block ? br : br.subarray(0, m), pos);
+      if (opts.trackStyles && (!styles.length || styles[styles.length - 1].style !== jam.target)) styles.push({ t: t, style: jam.target });
+    }
+    return { L: L, R: R, notes: jam.noteLog, jam: jam, styles: styles };
+  };
+})
+];
+function workletMain(DM) {
+  class AMProcessor extends AudioWorkletProcessor {
+    constructor() {
+      super();
+      this.jam = null; this.playing = false; this.stopping = false; this.ctr = 0; this.every = 12;
+      this.rec = false; this.recL = []; this.recR = []; this.recN = 0;
+      this.port.onmessage = (e) => this.onMsg(e.data);
+    }
+    err(e) { this.port.postMessage({ type: 'error', message: String(e && e.message || e) }); }
+    onMsg(m) {
+      try {
+        const J = this.jam;
+        switch (m.type) {
+          case 'preset':
+            if (!J) this.jam = new DM.Jam(m.preset, sampleRate, { params: m.params });
+            else J.setPreset(m.preset);
+            if (m.params && J) for (const k in m.params) J.setParam(k, m.params[k], 0);
+            break;
+          case 'play':
+            if (!J) break;
+            if (!this.playing || this.stopping || m.restart) { J.reset(); }
+            J.fadeTarget = 1; J.masterFade = 1; this.playing = true; this.stopping = false;
+            break;
+          case 'stop':
+            if (J && this.playing) { J.fadeTarget = 0; J.fadeSec = m.fade == null ? 0.25 : Math.max(0.01, m.fade); this.stopping = true; }
+            break;
+          case 'param': if (J) J.setParam(m.id, m.value, m.glide); break;
+          case 'params': if (J) for (const k in m.values) J.setParam(k, m.values[k], m.glide); break;
+          case 'event': if (J) J.fireEvent(m.id); break;
+          case 'focus': if (J) J.setFocus(m.style); break;
+          case 'audition': if (J) J.setAudition(m.inst); break;
+          case 'solo': if (J) J.setSolo(m.ids); break;
+          case 'mute': if (J) J.setMute(m.id, m.on); break;
+          case 'cue': if (J) J.cue(m.cue, m.sound, m.when, m.volume); break;
+          case 'rate': this.every = Math.max(1, m.every | 0); break;
+          case 'record':
+            this.rec = !!m.on;
+            if (!this.rec) this.flushRec(true);
+            break;
+        }
+      } catch (e) { this.err(e); }
+    }
+    flushRec(final) {
+      if (this.recN) {
+        const L = new Float32Array(this.recN), R = new Float32Array(this.recN);
+        let o = 0;
+        for (let i = 0; i < this.recL.length; i++) { L.set(this.recL[i], o); R.set(this.recR[i], o); o += this.recL[i].length; }
+        this.port.postMessage({ type: 'rec', L: L, R: R, final: !!final }, [L.buffer, R.buffer]);
+      } else if (final) this.port.postMessage({ type: 'rec', L: new Float32Array(0), R: new Float32Array(0), final: true });
+      this.recL = []; this.recR = []; this.recN = 0;
+    }
+    process(inputs, outputs) {
+      const out = outputs[0], L = out[0], R = out[1] || out[0];
+      if (!this.jam || !this.playing) { L.fill(0); if (R !== L) R.fill(0); return true; }
+      try {
+        this.jam.process(L, R, L.length);
+        if (this.stopping && this.jam.masterFade <= 0) { this.playing = false; this.stopping = false; }
+      } catch (e) { this.playing = false; this.err(e); return true; }
+      if (this.rec) {
+        this.recL.push(L.slice()); this.recR.push(R.slice()); this.recN += L.length;
+        if (this.recN >= 16384) this.flushRec(false);
+      }
+      if (++this.ctr % this.every === 0) this.port.postMessage({ type: 'status', status: this.jam.status(), playing: this.playing });
+      return true;
+    }
+  }
+  registerProcessor('am-jam', AMProcessor);
+}
+function amRuntimeApi(root, MODULES, workletMain) {
+  'use strict';
+  var DM = {};
+  MODULES.forEach(function (fn) { fn(DM); });
+  var SRC = null;
+  function engineSource() {
+    if (!SRC) SRC = 'var DM = {};\n' + MODULES.map(function (fn) { return '(' + fn.toString() + ')(DM);'; }).join('\n') + '\n(' + workletMain.toString() + ')(DM);\n';
+    return SRC;
+  }
+  function blobUrl() { return URL.createObjectURL(new Blob([engineSource()], { type: 'application/javascript' })); }
+  function dataUrl() {
+    var bytes = new TextEncoder().encode(engineSource()), bin = '';
+    for (var i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return 'data:application/javascript;base64,' + btoa(bin);
+  }
+  // main-thread fallback: run the same processor inside a ScriptProcessorNode
+  function fallbackNode(ctx) {
+    var Proc = null, bridge = { onmessage: null }, saved = { s: root.sampleRate, a: root.AudioWorkletProcessor, r: root.registerProcessor };
+    root.sampleRate = ctx.sampleRate;
+    root.AudioWorkletProcessor = function () { this.port = { onmessage: null, postMessage: function (m) { if (bridge.onmessage) bridge.onmessage({ data: m }); } }; };
+    root.registerProcessor = function (name, cls) { Proc = cls; };
+    workletMain(DM);
+    root.sampleRate = saved.s; root.AudioWorkletProcessor = saved.a; root.registerProcessor = saved.r;
+    var proc = new Proc(), sp = ctx.createScriptProcessor(2048, 0, 2), outs = [[null, null]];
+    sp.onaudioprocess = function (e) { outs[0][0] = e.outputBuffer.getChannelData(0); outs[0][1] = e.outputBuffer.getChannelData(1); proc.process([], outs); };
+    return { port: { postMessage: function (m) { proc.port.onmessage({ data: m }); }, set onmessage(fn) { bridge.onmessage = fn; } }, connect: function (d) { sp.connect(d); return d; }, disconnect: function () { sp.disconnect(); }, mode: 'main-thread' };
+  }
+
+  function Music(ctx, node, gain, preset, ownCtx) {
+    this.ctx = ctx; this.node = node; this.gain = gain; this.ownCtx = ownCtx;
+    this.preset = preset; this.listeners = {}; this.last = null; this.mode = node.mode || 'worklet';
+    var self = this;
+    node.port.onmessage = function (e) {
+      var m = e.data;
+      if (m.type === 'status') { self.last = m.status; self.emit('status', m.status); }
+      else if (m.type === 'error') self.emit('error', m.message);
+    };
+  }
+  Music.prototype.emit = function (type, data) { (this.listeners[type] || []).forEach(function (f) { try { f(data); } catch (e) { /* listener errors stay in the game */ } }); };
+  Music.prototype.on = function (type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); return this; };
+  Music.prototype.send = function (m) { this.node.port.postMessage(m); };
+  Music.prototype.param = function (name) { return DM.STUDIO.paramByName(this.preset, name); };
+  // start (call from a click or key press: browsers only allow audio after a user gesture)
+  Music.prototype.start = function () { var self = this; return this.ctx.resume().then(function () { self.send({ type: 'play' }); }); };
+  Music.prototype.stop = function (fadeSeconds) { this.send({ type: 'stop', fade: fadeSeconds == null ? 1 : fadeSeconds }); };
+  // set a parameter by name or id; glideSeconds overrides the parameter's own follow speed
+  Music.prototype.set = function (name, value, glideSeconds) {
+    var p = this.param(name);
+    if (!p) { this.emit('error', 'Unknown parameter "' + name + '"'); return false; }
+    if (typeof value === 'string' && p.type === 'list') { var i = p.options.indexOf(value); if (i < 0) return false; value = i; }
+    if (value === true) value = 1; if (value === false) value = 0;
+    this.send({ type: 'param', id: p.id, value: +value, glide: glideSeconds });
+    return true;
+  };
+  Music.prototype.get = function (name) { var p = this.param(name); return p && this.last ? this.last.params[p.id] : null; };
+  Music.prototype.event = function (name) {
+    if (!DM.STUDIO.eventByName(this.preset, name)) { this.emit('error', 'Unknown event "' + name + '"'); return false; }
+    this.send({ type: 'event', id: name }); return true;
+  };
+  Music.prototype.cue = function (type, sound, when) { this.send({ type: 'cue', cue: type, sound: sound || null, when: when || 'beat', volume: 0.8 }); };
+  // force one style (by name or id) regardless of the parameters; null returns control to the parameters
+  Music.prototype.forceStyle = function (name) {
+    var id = null;
+    if (name) this.preset.styles.forEach(function (s) { if (s.id === name || s.name.toLowerCase() === String(name).toLowerCase()) id = s.id; });
+    this.send({ type: 'focus', style: id });
+  };
+  Music.prototype.setPreset = function (preset) {
+    this.preset = DM.normalizePreset(typeof preset === 'string' ? JSON.parse(preset) : preset);
+    this.send({ type: 'preset', preset: this.preset });
+  };
+  Music.prototype.volume = function (v) { this.gain.gain.setTargetAtTime(Math.max(0, v), this.ctx.currentTime, 0.05); };
+  Music.prototype.status = function () { return this.last; };
+  Music.prototype.dispose = function () { try { this.node.disconnect(); this.gain.disconnect(); } catch (e) { /* already gone */ } if (this.ownCtx) this.ctx.close(); };
+
+  // options: preset (object or JSON text), context, destination, volume, params {name: value}, statusPerSecond
+  function create(opts) {
+    opts = opts || {};
+    var preset = DM.normalizePreset(typeof opts.preset === 'string' ? JSON.parse(opts.preset) : opts.preset);
+    var own = !opts.context, ctx = opts.context || new (root.AudioContext || root.webkitAudioContext)({ latencyHint: 'playback' });
+    var urls = !ctx.audioWorklet ? [] : opts.workletUrl ? [opts.workletUrl] : root.location && root.location.protocol === 'file:' ? [dataUrl()] : [blobUrl(), dataUrl()];
+    function tryUrls(list) { if (!list.length) return Promise.reject(new Error('no worklet')); return ctx.audioWorklet.addModule(list[0]).catch(function () { return tryUrls(list.slice(1)); }); }
+    return tryUrls(urls).then(function () {
+      return new AudioWorkletNode(ctx, 'am-jam', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
+    }, function () { return fallbackNode(ctx); }).then(function (node) {
+      var gain = ctx.createGain();
+      gain.gain.value = opts.volume == null ? 1 : opts.volume;
+      node.connect(gain); gain.connect(opts.destination || ctx.destination);
+      var m = new Music(ctx, node, gain, preset, own);
+      var every = Math.max(1, Math.round(ctx.sampleRate / 128 / (opts.statusPerSecond || 10)));
+      m.send({ type: 'rate', every: every });
+      var params = {};
+      Object.keys(opts.params || {}).forEach(function (k) { var p = m.param(k); if (p) params[p.id] = opts.params[k]; });
+      m.send({ type: 'preset', preset: preset, params: params });
+      return m;
+    });
+  }
+  root.AdaptiveMusic = {
+    version: '1.0', DM: DM, create: create, engineSource: engineSource,
+    // offline render to Float32Arrays (for baking loops in a build step): {L, R}
+    render: function (preset, seconds, options) { var o = options || {}; o.seconds = seconds || 30; var r = DM.renderJam(DM.normalizePreset(preset), o.sampleRate || 48000, o); return { L: r.L, R: r.R }; }
+  };
+}
+amRuntimeApi(root, MODULES, workletMain);
+})(typeof window !== "undefined" ? window : globalThis);

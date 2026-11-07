@@ -1,4 +1,4 @@
-import { words, phrases, grammar, say } from '../dsl.js';
+import { words, phrases, grammar } from '../dsl.js';
 
 export default {
   id: 'c06',
@@ -76,37 +76,5 @@ export default {
       ],
     },
   ],
-  episode: {
-    id: 'ep06',
-    title: { ko: '추석 저녁', en: 'Chuseok Dinner' },
-    panels: [
-      { scene: 'street', h: 'M', time: 'dusk', cast: [['me', 0.3, 'think', { arms: 'hold', prop: '#c98b6b' }], ['minji', 0.68, 'smile', { face: 'left' }]],
-        note: { en: 'Chuseok, the harvest festival. Minji has invited you home for dinner.' },
-        lines: [say('minji', '긴장하지 마세요!', 'Don’t be nervous!')] },
-      { scene: 'home', h: 'M', cast: [['mom', 0.25, 'happy'], ['dad', 0.5, 'smile'], ['grandma', 0.78, 'smile', { face: 'left' }]],
-        lines: [say('mom', '어서 와요! 반가워요.', 'Come in! Lovely to meet you.')] },
-      { scene: 'home', h: 'M', cast: [['me', 0.5, 'talk', { arms: 'hold', prop: '#c98b6b' }]],
-        lines: [say('me', '처음 뵙겠습니다. 이거 선물이에요.', 'It’s an honour to meet you. This is a small gift.')] },
-      { scene: 'home', h: 'M', cast: [['dad', 0.3, 'smile'], ['grandma', 0.7, 'happy', { face: 'left' }]],
-        lines: [say('dad', '뭘 이런 걸 다…', 'Oh, you shouldn’t have…'), say('grandma', '고마워요.', 'Thank you, dear.')] },
-      { scene: 'home', h: 'M', cast: [['me', 0.32, 'happy'], ['minji', 0.68, 'smile', { face: 'left' }]],
-        note: { en: 'The table is covered: japchae, golden jeon, and little half-moon rice cakes — songpyeon.' },
-        lines: [say('me', '잘 먹겠습니다!', 'I’ll enjoy this meal!')] },
-      { scene: 'home', h: 'M', cast: [['grandma', 0.6, 'talk', { face: 'left' }]],
-        lines: [say('grandma', '많이 드세요. 천천히 드세요.', 'Eat lots. Take your time.')] },
-      { scene: 'home', h: 'M', cast: [['me', 0.3, 'smile'], ['grandma', 0.72, 'happy', { face: 'left' }]],
-        lines: [say('me', '할머니, 이거 드세요.', 'Grandma, please have this.'), say('grandma', '아이고, 착하네.', 'Oh my, what a sweet girl.')] },
-      { scene: 'home', h: 'M', cast: [['mom', 0.3, 'talk'], ['me', 0.7, 'happy', { face: 'left' }]],
-        lines: [say('mom', '송편 맛있어요?', 'Is the songpyeon good?'), say('me', '네, 정말 맛있어요!', 'Yes, it’s really delicious!')] },
-      { scene: 'room', h: 'M', cast: [['me', 0.35, 'sleepy'], ['jiji', 0.72, 'sleepy']],
-        note: { en: 'Back at the academy, very full.' },
-        lines: [say('me', '지지야, 잘 자.', 'Good night, Jiji.'), say('jiji', '안녕히 주무세요.', 'Good night (most respectfully).')] },
-    ],
-    quiz: [
-      ['What do you say before eating?', ['잘 먹겠습니다', '잘 먹었습니다', '많이 드세요', '안녕히 주무세요'], 0],
-      ['Grandma keeps saying 많이 드세요. What does it mean?', ['Eat a lot', 'It’s delicious', 'Take this', 'Good night'], 0],
-      ['What is songpyeon?', ['Half-moon rice cakes', 'Kimchi stew', 'A gift box', 'Grilled fish'], 0],
-      ['Which word is the respectful “eat” for elders?', ['드세요', '먹어요', '마셔요', '주세요'], 0],
-    ],
-  },
+  // The webtoon episode for this chapter lives in content/story/season1.js.
 };

@@ -1,4 +1,4 @@
-import { words, phrases, grammar, say } from '../dsl.js';
+import { words, phrases, grammar } from '../dsl.js';
 
 export default {
   id: 'c12',
@@ -73,34 +73,5 @@ export default {
       ],
     },
   ],
-  episode: {
-    id: 'ep12',
-    title: { ko: '치킨 배달', en: 'Chicken Delivery' },
-    panels: [
-      { scene: 'academy', h: 'M', cast: [['me', 0.3, 'sleepy'], ['jiji', 0.7, 'think']],
-        note: { en: 'Exam week. The study room needs fuel.' },
-        lines: [say('jiji', '치킨 시킬까요?', 'Shall we order chicken?'), say('me', '좋아요! 제가 전화할게요.', 'Yes! I’ll call.')] },
-      { scene: 'room', h: 'M', cast: [['me', 0.4, 'talk', { arms: 'phone' }]],
-        lines: [say('me', '여보세요? 배달 돼요?', 'Hello? Do you deliver?'), say('man', '네, 됩니다. 뭐 드릴까요?', 'Yes, we do. What can I get you?')] },
-      { scene: 'room', h: 'M', cast: [['me', 0.4, 'talk', { arms: 'phone' }]],
-        lines: [say('me', '후라이드 치킨 한 마리 주세요.', 'One fried chicken, please.'), say('man', '양념 반 후라이드 반도 돼요.', 'Half sweet-spicy, half plain is also possible.')] },
-      { scene: 'room', h: 'M', cast: [['me', 0.4, 'think', { arms: 'phone' }]],
-        lines: [say('me', '죄송해요, 다시 한 번 말해 주세요. 천천히 말해 주세요.', 'Sorry, could you say that again? Slowly, please.')] },
-      { scene: 'room', h: 'M', cast: [['me', 0.4, 'happy', { arms: 'phone' }]],
-        lines: [say('man', '양념… 반… 후라이드… 반…', 'Sweet-spicy… half… plain… half…', { slow: true }), say('me', '아! 네, 그걸로 할게요!', 'Oh! Yes, I’ll have that!')] },
-      { scene: 'room', h: 'M', cast: [['me', 0.4, 'talk', { arms: 'phone' }]],
-        lines: [say('man', '주소가 어떻게 되세요?', 'What’s the address?'), say('me', '서촌 달빛 책방 이 층이에요.', 'Seochon, Moonlight Bookshop, second floor.')] },
-      { scene: 'room', h: 'M', cast: [['me', 0.4, 'smile', { arms: 'phone' }], ['jiji', 0.75, 'happy']],
-        lines: [say('man', '삼십 분쯤 걸려요. 문자 보내 드릴게요.', 'It’ll take about thirty minutes. We’ll text you.'), say('me', '네, 감사합니다!', 'Great, thank you!')] },
-      { scene: 'academy', h: 'M', cast: [['me', 0.25, 'happy'], ['head', 0.55, 'smile'], ['jiji', 0.82, 'happy']],
-        note: { en: 'Thirty-two minutes later.' },
-        lines: [say('head', '냄새가 좋네요. 저도 한 조각만…', 'That smells good. Just one piece for me too…')] },
-    ],
-    quiz: [
-      ['How does she start the phone call?', ['여보세요?', '안녕히 계세요', '저기요!', '잠깐만요'], 0],
-      ['What does she say when she doesn’t understand?', ['다시 한 번 말해 주세요', '배달 돼요?', '얼마예요?', '주소가 어떻게 되세요?'], 0],
-      ['What did she order in the end?', ['Half sweet-spicy, half plain chicken', 'Two pizzas', 'Kimchi stew', 'Only plain chicken'], 0],
-      ['How long will the delivery take?', ['About thirty minutes', 'About three minutes', 'About an hour', 'About thirteen minutes'], 0],
-    ],
-  },
+  // The webtoon episode for this chapter lives in content/story/season1.js.
 };

@@ -1,4 +1,4 @@
-import { words, phrases, grammar, say } from '../dsl.js';
+import { words, phrases, grammar } from '../dsl.js';
 
 export default {
   id: 'c01',
@@ -78,37 +78,5 @@ export default {
       ],
     },
   ],
-  episode: {
-    id: 'ep01',
-    title: { ko: '첫 수업', en: 'The First Class' },
-    panels: [
-      { scene: 'academy', h: 'M', time: 'night', cast: [['head', 0.3, 'smile'], ['jiji', 0.75, 'idle']],
-        note: { en: 'Your first evening class. The headmistress is already waiting.' },
-        lines: [say('head', '안녕하세요! 저는 서 선생님이에요.', 'Hello! I’m Teacher Seo.')] },
-      { scene: 'academy', h: 'M', time: 'night', cast: [['me', 0.4, 'talk']],
-        lines: [say('me', '안녕하세요. 저는 새 학생이에요.', 'Hello. I’m the new student.')] },
-      { scene: 'academy', h: 'M', time: 'night', cast: [['head', 0.28, 'happy'], ['me', 0.7, 'smile', { face: 'left' }]],
-        lines: [say('head', '만나서 반가워요.', 'Nice to meet you.'), say('me', '처음 뵙겠습니다.', 'It’s an honour to meet you.')] },
-      { scene: 'academy', h: 'S', time: 'night', cast: [['jiji', 0.5, 'smug', { zoom: 2.3 }]],
-        lines: [say('jiji', '오, 잘했어요.', 'Oh, nicely done.')] },
-      { scene: 'academy', h: 'M', time: 'night', cast: [['head', 0.3, 'talk'], ['me', 0.7, 'think', { face: 'left' }]],
-        lines: [say('head', '이름이 뭐예요?', 'What’s your name?'), say('me', '제 이름은…', 'My name is…')] },
-      { scene: 'academy', h: 'M', time: 'night', cast: [['jiji', 0.5, 'happy']],
-        lines: [say('jiji', '저는 지지예요. 마법 고양이예요.', 'I’m Jiji. A magic cat.')] },
-      { scene: 'academy', h: 'M', time: 'night', cast: [['me', 0.35, 'surprised'], ['head', 0.72, 'smile', { face: 'left' }]],
-        note: { en: 'A pile of spellbooks slides off the desk.' },
-        lines: [say('me', '죄송합니다!', 'I’m so sorry!'), say('head', '괜찮아요.', 'It’s all right.')] },
-      { scene: 'academy', h: 'M', time: 'night', cast: [['me', 0.3, 'smile'], ['head', 0.7, 'smile', { face: 'left' }]],
-        note: { en: 'Class is over.' },
-        lines: [say('me', '감사합니다, 선생님. 안녕히 계세요.', 'Thank you, teacher. Goodbye.'), say('head', '안녕히 가세요.', 'Goodbye. Go safely.')] },
-      { scene: 'street', h: 'M', time: 'night', cast: [['me', 0.32, 'neutral'], ['jiji', 0.68, 'smug']],
-        lines: [say('jiji', '', 'The one who leaves says 안녕히 계세요. The one who stays says 안녕히 가세요. You got it right.')] },
-    ],
-    quiz: [
-      ['You are leaving the classroom. What do you say?', ['안녕히 계세요', '안녕히 가세요', '처음 뵙겠습니다', '괜찮아요'], 0],
-      ['죄송합니다 means…', ['I’m sorry', 'Thank you', 'Nice to meet you', 'Goodbye'], 0],
-      ['How does the headmistress answer the apology?', ['괜찮아요', '감사합니다', '네', '아니요'], 0],
-      ['지지는 ___예요.', ['고양이', '학생', '선생님', '친구'], 0],
-    ],
-  },
+  // The webtoon episode for this chapter lives in content/story/season1.js.
 };

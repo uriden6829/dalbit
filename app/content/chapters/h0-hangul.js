@@ -1,4 +1,4 @@
-import { words, say } from '../dsl.js';
+import { words } from '../dsl.js';
 
 // Letter rows: key | sound | name | memory hint | syllable to play for listening
 function letters(text) {
@@ -120,33 +120,5 @@ export default {
       `),
     },
   ],
-  episode: {
-    id: 'ep00',
-    title: { ko: '프롤로그: 달빛 학교', en: 'Prologue: The Moonlight Academy' },
-    panels: [
-      { scene: 'street', h: 'M', time: 'night', cast: [],
-        note: { en: 'Seoul, late autumn. A street you have walked down a hundred times.' },
-        signs: [['카페', 'café'], ['책방', 'bookshop']] },
-      { scene: 'street', h: 'M', time: 'night', cast: [['jiji', 0.62, 'idle']],
-        note: { en: 'Tonight, beside the old bookshop, a black cat in a pointed hat is waiting.' } },
-      { scene: 'street', h: 'L', time: 'night', cast: [['jiji', 0.5, 'happy', { zoom: 2.5 }]],
-        lines: [say('jiji', '안녕하세요.', 'Hello.')] },
-      { scene: 'street', h: 'M', time: 'night', cast: [['me', 0.3, 'surprised'], ['jiji', 0.72, 'smug']],
-        lines: [say('me', '', 'Did that cat just… talk?'), say('jiji', '네. 저는 지지예요.', 'Yes. I’m Jiji.')] },
-      { scene: 'academy', h: 'L', time: 'night', cast: [],
-        note: { en: 'Behind the bookshelves: a staircase, then a room full of moonlight. 달빛 학교 — the Moonlight Academy.' },
-        signs: [['달빛 학교', 'Moonlight Academy']] },
-      { scene: 'academy', h: 'M', time: 'night', cast: [['head', 0.34, 'smile'], ['me', 0.68, 'neutral', { face: 'left' }]],
-        lines: [say('head', '어서 오세요.', 'Welcome.')] },
-      { scene: 'academy', h: 'M', time: 'night', cast: [['me', 0.3, 'think'], ['jiji', 0.7, 'smug']],
-        lines: [say('jiji', '', 'Here, every Korean word is a small spell. Say it well, and the city opens a little.')] },
-      { scene: 'academy', h: 'M', time: 'night', cast: [['me', 0.32, 'happy'], ['jiji', 0.7, 'happy']],
-        lines: [say('jiji', '준비됐어요?', 'Ready?'), say('me', '네!', 'Yes!')] },
-    ],
-    quiz: [
-      ['What does 안녕하세요 mean?', ['Hello', 'Thank you', 'Goodbye', 'Welcome'], 0],
-      ['달빛 학교 is the…', ['Moonlight Academy', 'Old bookshop', 'Night café', 'Cat house'], 0],
-      ['네 means…', ['Yes', 'No', 'Hello', 'Ready'], 0],
-    ],
-  },
+  // The webtoon episode for this chapter lives in content/story/season1.js.
 };

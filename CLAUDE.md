@@ -19,9 +19,17 @@ and installed on the learner's PC; her progress lives only in her browser. Every
 ## Where things are
 - Course content: `app/content/chapters/*.js`, registered in order in `app/content/index.js`. The row format is
   documented at the top of `app/content/dsl.js`; copy an existing chapter as the template.
-- Webtoon episodes live inside each chapter (`episode`). Scenes: keys of `SCENES` in `app/js/art/scenes.js`
-  (a scene's `behind` range is where staff stand behind its counter/table). Cast: `CAST` in `app/js/art/people.js`
-  plus `me` and `jiji`.
+- Webtoon: Season 1 "달빛 배달부" is ONE continuous story in `app/content/story/season1.js` (one episode per chapter,
+  attached in `content/index.js`). Art engine v2 in `app/js/art/toon/`: `folk.js` (characters, moods, poses — FOLK),
+  `vista.js` (painted scenes — VISTAS), `compose.js` (shots, props, effects, panel → SVG). Bubbles are HTML in the
+  gutter (`ui/stories.js`). Draw/review: `node tools/toon.mjs sheet epNN` (look at it), `critique all`, `lab cast|moods|scenes`;
+  dev page `app/toonlab.html`. Old flat engine (`art/scenes.js`, `people.js`, `panel.js`) is kept for AI-made packs.
+- Dictionary for Shift breakdown + word bank: `app/js/lib/morph.js` (generates conjugations/particles), extra words in
+  `app/content/lexicon.js`. New story/lesson Korean must be covered: `node tools/lexcheck.mjs` (validate fails otherwise).
+- Voice: `app/js/lib/speech.js` (neural-voice ranking, PERSONAS per character, slow). Music: `app/js/lib/bgm.js` +
+  Live Studio runtime in `app/vendor/`; presets built by `node tools/build-bgm.mjs` (do not edit bgm-presets.js by hand).
+- Jiji in the corner: `app/js/ui/companion.js`; word tools: `ui/wordtools.js`; word bank screen: `ui/wordbank.js`.
+  Screens talk to them through `app/js/lib/bus.js` events (route, exercise, answer, session-end, story, tts, mic).
 - Entrance-exam items: `app/content/placement-bank.js` (correct option first; level → difficulty table at top).
 - Jiji's voice lines: `app/content/jiji-lines.js` — dry, kind, short; a cat, not a cheerleader.
 - Screens: one file per route in `app/js/ui/`; routes are registered in `app/js/main.js`.

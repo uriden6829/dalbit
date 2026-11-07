@@ -6,19 +6,19 @@ import { romanize, pronounce } from '../lib/hangul.js';
 import { pick } from '../lib/rand.js';
 import LINES from '../../content/jiji-lines.js';
 
-export function speakBtn(text, { big = false, rate = 1, label = 'Listen' } = {}) {
+export function speakBtn(text, { big = false, slow = false, who = '', label = 'Listen' } = {}) {
   const b = h('button', { class: `speak-btn ${big ? 'big' : ''}`, title: label, 'aria-label': label, type: 'button' });
   b.append(svg(icon('sound', big ? 28 : 18)));
   b.addEventListener('click', async (e) => {
     e.stopPropagation();
     b.classList.add('playing');
-    await speak(text, { rate });
+    await speak(text, { slow, who });
     b.classList.remove('playing');
   });
   return b;
 }
-export function slowBtn(text) {
-  const b = speakBtn(text, { rate: 0.7, label: 'Listen slowly' });
+export function slowBtn(text, { who = '' } = {}) {
+  const b = speakBtn(text, { slow: true, who, label: 'Listen slowly' });
   b.replaceChildren(svg(icon('slow', 18)));
   return b;
 }

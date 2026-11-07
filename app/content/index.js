@@ -13,7 +13,10 @@ import c10 from './chapters/c10-health.js';
 import c11 from './chapters/c11-past.js';
 import c12 from './chapters/c12-phone.js';
 
-export const COURSE = [h0, c01, c02, c03, c04, c05, c06, c07, c08, c09, c10, c11, c12];
+import STORY from './story/season1.js';
+
+// Each chapter's webtoon episode comes from the season file (one continuous story).
+export const COURSE = [h0, c01, c02, c03, c04, c05, c06, c07, c08, c09, c10, c11, c12].map((ch) => (STORY[ch.id] ? { ...ch, episode: STORY[ch.id] } : ch));
 
 const PREFIX = { letter: 'h', word: 'w', phrase: 'p' };
 export const itemId = (it) => (it.kind === 'gram' ? it.key : `${PREFIX[it.kind]}:${it.key}`);
