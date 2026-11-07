@@ -4,7 +4,8 @@ A static web app in `app/` (plain ES modules, no build step, no npm dependencies
 and installed on the learner's PC; her progress lives only in her browser. Every push to `main` updates her copy.
 
 ## Hard rules
-- **Static and dependency-free.** Plain JS modules loaded by the browser; tools in `tools/` use only Node built-ins.
+- **Static and dependency-free.** Plain JS modules loaded by the browser; tools in `tools/` use only Node built-ins
+  (exception: the dev-only voice builder in `tools/voice/`, which needs onnxruntime-node).
 - **Text is data.** Render all text with `h()` from `app/js/lib/dom.js` (textContent). `trustedHTML` / `svg()` take
   only markup built in `app/js/art/`. Content from the AI, the web or a pasted reply goes through
   `app/js/ai/safety.js` `validatePack()` before it is stored or shown.
@@ -26,7 +27,14 @@ and installed on the learner's PC; her progress lives only in her browser. Every
   dev page `app/toonlab.html`. Old flat engine (`art/scenes.js`, `people.js`, `panel.js`) is kept for AI-made packs.
 - Dictionary for Shift breakdown + word bank: `app/js/lib/morph.js` (generates conjugations/particles), extra words in
   `app/content/lexicon.js`. New story/lesson Korean must be covered: `node tools/lexcheck.mjs` (validate fails otherwise).
-- Voice: `app/js/lib/speech.js` (neural-voice ranking, PERSONAS per character, slow). Music: `app/js/lib/bgm.js` +
+- Voice: STUDIO voices first — every course line is pre-rendered with Supertonic 3 (10 neural voices) into
+  `app/voice/clips/*.ogg` + manifest `app/voice/index.json`; casting (who speaks what, speeds) in
+  `app/js/lib/voicecast.js`, shared by the app and the builder. **After changing any Korean content run
+  `node tools/voice/build-voice.mjs --check`** (once: `cd tools/voice && npm install`; the model downloads to the
+  git-ignored `tools/voice/.models/`). It renders only new/changed lines and deletes unused clips; validate warns
+  about lines without a clip (they fall back to the browser voice). `tools/voice/` is the ONE place with npm deps
+  (dev-only, never shipped). Numbers are read via `tools/voice/korean-numbers.mjs`. Playback test:
+  `node tools/test/voice-play.mjs`. Browser voice fallback + slow + PERSONAS: `app/js/lib/speech.js`. Music: `app/js/lib/bgm.js` +
   Live Studio runtime in `app/vendor/`; presets built by `node tools/build-bgm.mjs` (do not edit bgm-presets.js by hand).
 - Jiji in the corner: `app/js/ui/companion.js`; word tools: `ui/wordtools.js`; word bank screen: `ui/wordbank.js`.
   Screens talk to them through `app/js/lib/bus.js` events (route, exercise, answer, session-end, story, tts, mic).

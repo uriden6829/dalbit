@@ -4,3 +4,5 @@ node_modules/
 Thumbs.db
 # local screenshots from tools/shot.mjs
 /shots/
+# voice builder: model weights + reports (tools/voice/build-voice.mjs downloads them)
+tools/voice/.models/

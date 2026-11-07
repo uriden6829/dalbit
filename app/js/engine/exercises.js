@@ -45,9 +45,10 @@ function choice(item, variant, prompt, correct, wrong, extra = {}) {
 }
 
 const FINALS = { 'ㄱ': 'ㄱㄲㅋ', 'ㄴ': 'ㄴ', 'ㄷ': 'ㄷㅅㅈㅊㅌㅆ', 'ㄹ': 'ㄹ', 'ㅁ': 'ㅁ', 'ㅂ': 'ㅂㅍ', 'ㅇ': 'ㅇ' };
-const letterSyllables = (it) => {
+// Every syllable a letter's reading drill can show (the voice builder renders a clip for each).
+export const letterSyllables = (it) => {
   if (it.batchim) {
-    return [...FINALS[it.ko]].flatMap((t) => ['ㄱ', 'ㄴ', 'ㅁ', 'ㅂ', 'ㅅ'].map((l) => compose({ l, v: pick(['ㅏ', 'ㅗ', 'ㅜ', 'ㅓ']), t })));
+    return [...FINALS[it.ko]].flatMap((t) => ['ㄱ', 'ㄴ', 'ㅁ', 'ㅂ', 'ㅅ'].flatMap((l) => ['ㅏ', 'ㅗ', 'ㅜ', 'ㅓ'].map((v) => compose({ l, v, t }))));
   }
   const isVowel = /[ㅏ-ㅣ]/.test(it.ko);
   if (isVowel) return ['ㅇ', 'ㄱ', 'ㄴ', 'ㅁ', 'ㅅ'].map((l) => compose({ l, v: it.ko }));

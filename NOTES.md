@@ -77,3 +77,14 @@ reading + speaking focus, story-based memory, periodic recaps.
   ~200 panels), gutter bubbles, tools/toon.mjs (sheet/critique/lab). Old per-chapter episodes removed from chapter files.
 - New state: settings.{maleVoice, voiceMix, slowAll, companion, bgm{on,preset,volume}}, state.wordbank. rate default 1.
 - Not published. Release when ready: node tools/release.mjs "<note>" --minor
+
+## Task 69 — studio voices (details + build measurements: ../69-study-into-latest-tts-and-ai-voice-engin/NOTES.md)
+- Research (Nov 2026): cloud TTS (ElevenLabs v3/v4, Gemini Flash TTS, Typecast…) needs keys/cost/network; big open
+  models (VoxCPM2, Qwen3-TTS, Fish S2) need Python+GPU. Chosen: Supertonic 3 (Supertone, 2026-04, ONNX, 10 voices,
+  OpenRAIL-M), run in Node at BUILD time → every course line pre-rendered to Ogg Opus in app/voice/.
+- app/js/lib/voicecast.js = casting + clip names (shared by app and builder). speech.js plays clips first, browser
+  voice for anything uncovered or if a clip fails. Settings → Voice: Studio / Browser. settings.voiceEngine.
+- Builder tools/voice/ (only npm deps in repo, dev-only): corpus → number reading → render (slow = phrase-chunked)
+  → trim/level → Whisper check + retakes → Opus via headless Edge WebCodecs + own Ogg muxer → manifest.
+- sw.js: clips cache-first in 'voice-clips-1' (survives updates); build.mjs does not precache clips.
+- Tests: tools/test/voice-play.mjs (headless: clip / slow clip / fallback / browser setting).

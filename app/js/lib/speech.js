@@ -1,20 +1,33 @@
-// Text-to-speech, speech recognition and simple recording, all through browser APIs.
+// Text-to-speech, speech recognition and simple recording.
 //
-// Natural voice: Edge ships neural Korean voices ("Microsoft 선히 / 인준 Online (Natural)", "Hyunsu Multilingual");
-// Chrome has "Google 한국어". Old desktop voices (Microsoft Heami) sound robotic, so they are used only when
-// nothing better exists, and the app says how to get the natural ones.
-// Several people: story characters each get a persona (voice + small pitch/speed shifts), and lessons can
-// alternate between a woman's and a man's voice so she hears words from more than one speaker.
-// Slow reading lowers the voice's own speaking rate (the neural engine stretches the speech without
-// chopping it), so slow audio stays smooth instead of being cut into pieces.
+// Studio voices (default): every line of the course was rendered ahead of time by Supertonic 3, a neural TTS
+// with ten real voices, and ships as small Ogg Opus clips (app/voice/, made by tools/voice/build-voice.mjs).
+// Same sound in every browser, works offline, each story character has their own voice, and 🐢 slow clips are
+// the voice itself speaking slowly (rendered, not stretched). Casting lives in voicecast.js.
+//
+// Browser voice (fallback, and for text no clip exists for — AI lessons, Ask replies): Edge ships neural Korean
+// voices ("Microsoft 선히 / 인준 Online (Natural)", "Hyunsu Multilingual"); Chrome has "Google 한국어". Old desktop
+// voices (Microsoft Heami) sound robotic, so they are used only when nothing better exists.
+// Slow reading lowers the voice's own speaking rate, so slow audio stays smooth instead of being cut into pieces.
 
 import { emit } from './bus.js';
+import { VOICES, TEACHERS, castVoice, clipName, speechText } from './voicecast.js';
 
 let voices = [];
-let prefs = { voice: '', rate: 1, mix: true, slow: false, maleVoice: '' };
+let prefs = { voice: '', rate: 1, mix: true, slow: false, maleVoice: '', engine: 'studio' };
+
+let studio = null; // Map text -> ['F1', 'F1s', ...] from voice/index.json
+async function loadStudio() {
+  try {
+    const j = await (await fetch('voice/index.json')).json();
+    studio = new Map(Object.entries(j.lines).map(([t, v]) => [t, v.split(' ')]));
+  } catch { studio = null; }
+  emit('voices', voices);
+}
 
 export function initSpeech(p) {
   if (p) prefs = { ...prefs, ...p };
+  if (globalThis.fetch && globalThis.Audio) loadStudio();
   if (!('speechSynthesis' in globalThis)) return;
   const load = () => { voices = speechSynthesis.getVoices().filter((v) => /^ko/i.test(v.lang)); emit('voices', voices); };
   load();
@@ -22,7 +35,9 @@ export function initSpeech(p) {
 }
 export const setSpeechPrefs = (p) => { prefs = { ...prefs, ...p }; emit('speech-prefs', prefs); };
 export const speechPrefs = () => ({ ...prefs });
-export const hasTTS = () => 'speechSynthesis' in globalThis;
+export const hasStudio = () => !!studio?.size;
+const useStudio = () => prefs.engine !== 'browser' && hasStudio();
+export const hasTTS = () => hasStudio() || 'speechSynthesis' in globalThis;
 export const hasKoreanVoice = () => voices.length > 0;
 
 // ---- Voice catalogue ----
@@ -51,8 +66,9 @@ export function bestVoice(gender) {
   // Never trade a natural voice for a robotic one just to get the other gender.
   return list.find((v) => voiceGender(v) === gender && naturalness(v) >= Math.min(top, 6)) || list[0] || null;
 }
-// 'natural' | 'basic' | 'none' — the settings screen and the first-run hint use this.
+// 'studio' | 'natural' | 'basic' | 'none' — the settings screen and the first-run hint use this.
 export function voiceQuality() {
+  if (useStudio()) return 'studio';
   const v = bestVoice();
   return !v ? 'none' : isNatural(v) ? 'natural' : 'basic';
 }
@@ -74,21 +90,104 @@ function personaFor(who, text) {
 }
 
 let speakToken = 0;
-export function stopSpeaking() { speakToken++; try { speechSynthesis.cancel(); } catch { /* none */ } emit('tts', { on: false }); }
+let playing = null; // the <audio> of the studio clip being played
+export function stopSpeaking() {
+  speakToken++;
+  if (playing) { playing.pause(); playing = null; }
+  try { speechSynthesis.cancel(); } catch { /* none */ }
+  emit('tts', { on: false });
+}
+
+// ---- Studio clips ----
+const sentencesOf = (t) => t.split(/(?<=[.!?。])\s+/).filter(Boolean);
+
+// One clip for `text`, preferring the cast voice, then any voice of the same gender, then anyone.
+// Slow: the voice's own slow rendering; if only a normal clip exists, it is played a little slower.
+function clipFor(text, voice, slow) {
+  const have = studio.get(text);
+  if (!have) return null;
+  const g = VOICES[voice]?.g;
+  const names = [...new Set(have.map((v) => v.replace(/s$/, '')))];
+  const order = [voice, ...names.filter((v) => VOICES[v]?.g === g), ...names];
+  const url = (v, s) => `voice/clips/${clipName(v, s, text)}.ogg`;
+  if (slow) { const v = order.find((x) => have.includes(`${x}s`)); if (v) return { url: url(v, true), rate: 1 }; }
+  const v = order.find((x) => have.includes(x));
+  return v ? { url: url(v, false), rate: slow ? 0.8 : 1 } : null;
+}
+// Clips for a whole line: one clip, or one per sentence if every sentence has one. null = not covered.
+function studioPlan(text, voice, slow) {
+  const t = speechText(text);
+  const one = clipFor(t, voice, slow);
+  if (one) return [one];
+  const parts = sentencesOf(t);
+  if (parts.length < 2) return null;
+  const plan = parts.map((s) => clipFor(s, voice, slow));
+  return plan.every(Boolean) ? plan : null;
+}
+// Clips are fetched whole (plain fetch: no Range requests, so the service worker can keep them) and played
+// from memory. The last few dozen stay loaded, so replays and "Listen again" start instantly.
+const blobs = new Map();
+function loadClip(url) {
+  if (!blobs.has(url)) {
+    blobs.set(url, fetch(url).then((r) => (r.ok ? r.blob() : null)).then((b) => (b ? URL.createObjectURL(b) : null)).catch(() => null));
+    if (blobs.size > 60) { const [k, p] = blobs.entries().next().value; blobs.delete(k); p.then((u) => u && setTimeout(() => URL.revokeObjectURL(u), 30000)); }
+  }
+  return blobs.get(url);
+}
+async function playClip({ url, rate }, token) {
+  const src = await loadClip(url);
+  if (!src) { blobs.delete(url); return false; }
+  return new Promise((res) => {
+    if (token !== speakToken) return res(true);
+    const a = new Audio(src);
+    a.preservesPitch = true;
+    a.playbackRate = Math.max(0.5, Math.min(1.5, rate * prefs.rate));
+    playing = a;
+    const end = (ok) => { a.onended = a.onerror = a.onpause = null; if (playing === a) playing = null; res(ok); };
+    a.onended = () => end(true);
+    a.onpause = () => end(true); // stopSpeaking()
+    a.onerror = () => end(false);
+    a.play().catch(() => end(false));
+  });
+}
 
 // Text -> chunks the engine can say in one breath. Neural voices get whole sentences (natural phrasing);
 // very long text is split at sentence ends because some engines stop after ~15 seconds.
 function chunks(text) {
-  const clean = String(text).replace(/[“”"「」『』]/g, '').replace(/\s*[—–]\s*/g, ', ').replace(/~/g, '').trim();
+  const clean = String(text).replace(/\s*\([^)]*\)/g, '').replace(/[“”"「」『』]/g, '').replace(/\s*[—–]\s*/g, ', ').replace(/~/g, '').trim();
   if (clean.length <= 160) return [clean];
   return clean.split(/(?<=[.!?。…])\s+/).filter(Boolean);
 }
 
-// speak(text, { rate, pitch, who, slow, voice })  — resolves when finished (or interrupted).
-export function speak(text, { rate = 1, pitch = 1, who = '', slow = false, gender } = {}) {
+// speak(text, { rate, pitch, who, slow, gender })  — resolves when finished (or interrupted).
+export function speak(text, o = {}) {
   if (!hasTTS() || !text) return Promise.resolve();
   stopSpeaking();
   const token = speakToken;
+  if (useStudio()) {
+    const voice = o.gender ? TEACHERS[o.gender] : castVoice(speechText(text), o.who, prefs.mix);
+    const plan = studioPlan(String(text), voice, !!o.slow || prefs.slow);
+    if (plan) {
+      // 🐢 with the global slow switch also on: the slow clip, a touch slower still.
+      if (o.slow && prefs.slow) for (const c of plan) c.rate *= 0.88;
+      plan.forEach((c) => loadClip(c.url));
+      emit('tts', { on: true, text, who: o.who || '' });
+      return (async () => {
+        for (const [i, clip] of plan.entries()) {
+          if (token !== speakToken) return;
+          if (i) await new Promise((r) => setTimeout(r, o.slow ? 380 : 220));
+          // A clip that can't play (offline and not cached yet) is read by the browser voice instead.
+          if (!(await playClip(clip, token)) && token === speakToken) { await browserSpeak(text, o, token); return; }
+        }
+        if (token === speakToken) emit('tts', { on: false });
+      })();
+    }
+  }
+  return browserSpeak(text, o, token);
+}
+
+function browserSpeak(text, { rate = 1, pitch = 1, who = '', slow = false, gender } = {}, token) {
+  if (!('speechSynthesis' in globalThis)) return Promise.resolve();
   const parts = chunks(text);
   const per = personaFor(who, String(text));
   const voice = bestVoice(gender || per.g);
@@ -164,7 +263,7 @@ export async function record(ms = 4000) {
 // ---- Voice tuning (adapted from the Voice Lab's "Something sounds wrong?" nudges) ----
 // One click = one step, always within range; the settings screen shows these as buttons.
 export const NUDGES = [
-  { id: 'robotic', label: 'Sounds robotic', apply: (s) => ({ voice: nextNatural(s.voice) }) },
+  { id: 'robotic', label: 'Sounds robotic', apply: (s) => (hasStudio() && s.voiceEngine === 'browser' ? { voiceEngine: 'studio' } : { voice: nextNatural(s.voice) }) },
   { id: 'fast', label: 'Too fast', apply: (s) => ({ rate: Math.max(0.6, +(s.rate - 0.05).toFixed(2)) }) },
   { id: 'slow', label: 'Too slow', apply: (s) => ({ rate: Math.min(1.25, +(s.rate + 0.05).toFixed(2)) }) },
   { id: 'same', label: 'Always the same voice', apply: () => ({ mix: true }) },
@@ -175,4 +274,4 @@ function nextNatural(current) {
   const i = list.findIndex((v) => v.name === current);
   return list[(i + 1) % list.length].name;
 }
-export const speechPrefsFrom = (s) => ({ voice: s.voice, rate: s.rate, mix: s.voiceMix, maleVoice: s.maleVoice, slow: s.slowAll });
+export const speechPrefsFrom = (s) => ({ voice: s.voice, rate: s.rate, mix: s.voiceMix, maleVoice: s.maleVoice, slow: s.slowAll, engine: s.voiceEngine || 'studio' });

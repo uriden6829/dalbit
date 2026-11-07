@@ -19,7 +19,9 @@ function walk(dir) {
 
 if (process.argv.includes('--icons')) await icons();
 
-const files = walk(app).map((p) => relative(app, p).replaceAll('\\', '/')).filter((f) => !SKIP.has(f) && !f.startsWith('.')).sort();
+// Voice clips (≈20 MB) are not precached: the service worker keeps each one after its first play.
+// Their names change with their content, and voice/index.json (which is precached and hashed) lists them.
+const files = walk(app).map((p) => relative(app, p).replaceAll('\\', '/')).filter((f) => !SKIP.has(f) && !f.startsWith('.') && !f.startsWith('voice/clips/')).sort();
 const hash = createHash('sha256');
 for (const f of files) hash.update(f).update(readFileSync(join(app, f)));
 const build = hash.digest('hex').slice(0, 12);

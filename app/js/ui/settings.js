@@ -1,6 +1,6 @@
 import { h, svg, toast, download, confirmDialog } from '../lib/dom.js';
 import { getState, update, exportBackup, importBackup, resetAll, getApiKey, setApiKey, flush } from '../lib/store.js';
-import { koreanVoices, setSpeechPrefs, speak, hasSTT, voiceQuality, voiceGender, naturalness, speechPrefsFrom, NUDGES } from '../lib/speech.js';
+import { koreanVoices, setSpeechPrefs, speak, hasSTT, voiceQuality, voiceGender, naturalness, speechPrefsFrom, NUDGES, hasStudio } from '../lib/speech.js';
 import { BGM_LIST, bgmRefresh } from '../lib/bgm.js';
 import { emit } from '../lib/bus.js';
 import { MODELS, DEFAULT_MODEL, testKey } from '../ai/claude.js';
@@ -126,20 +126,26 @@ function voiceSection(s, set) {
   const pickFor = (g, key) => h('select', { onchange: (e) => set(key, e.target.value) },
     h('option', { value: '', selected: !s[key] }, 'Most natural available'),
     voices.filter((v) => voiceGender(v) === g).map((v) => h('option', { value: v.name, selected: s[key] === v.name }, label(v))));
-  const status = q === 'natural'
-    ? h('div', { class: 'pill', style: { background: 'color-mix(in srgb, var(--sage) 25%, transparent)' } }, '✓ Natural neural voices are on')
-    : h('div', { class: 'card', style: { background: 'color-mix(in srgb, var(--rose) 14%, transparent)', padding: '12px 14px' } },
-      h('b', null, q === 'none' ? 'No Korean voice found.' : 'Only a basic (robotic) Korean voice is available here.'),
-      h('div', { class: 'small' }, 'Open Dalbit in Microsoft Edge: it includes natural Korean voices (선히, 인준, Hyunsu) that sound like real people. They need internet; without it the basic voice is used.'));
+  const engine = s.voiceEngine || 'studio';
+  const good = (t) => h('div', { class: 'pill', style: { background: 'color-mix(in srgb, var(--sage) 25%, transparent)' } }, t);
+  const status = q === 'studio' ? good('✓ Studio voices are on')
+    : q === 'natural' ? good('✓ Natural neural voices are on')
+      : h('div', { class: 'card', style: { background: 'color-mix(in srgb, var(--rose) 14%, transparent)', padding: '12px 14px' } },
+        h('b', null, q === 'none' ? 'No Korean voice found.' : 'Only a basic (robotic) Korean voice is available here.'),
+        h('div', { class: 'small' }, engine === 'browser' && hasStudio() ? 'Switch to Studio voices above — they sound like real people in every browser.'
+          : 'Open Dalbit in Microsoft Edge: it includes natural Korean voices (선히, 인준, Hyunsu) that sound like real people. They need internet; without it the basic voice is used.'));
+  const browser = engine === 'browser' || !hasStudio();
   return h('section', { class: 'card stack' }, h('h2', null, 'Voice'),
+    hasStudio() ? row('Voices', seg([['studio', 'Studio voices'], ['browser', 'Browser voice']], engine, (v) => set('voiceEngine', v)),
+      'Studio: ten natural voices recorded for Dalbit with a neural voice engine (Supertonic 3). Every story character sounds like their own person, it works offline, and it sounds the same in every browser. Browser: your browser’s own Korean voice. Text Jiji writes for you (AI lessons, Ask) always uses the browser voice.') : null,
     status,
-    voices.length ? row('Woman’s voice', pickFor('f', 'voice')) : null,
-    voices.some((v) => voiceGender(v) === 'm') ? row('Man’s voice', pickFor('m', 'maleVoice')) : null,
+    browser && voices.length ? row('Woman’s voice', pickFor('f', 'voice')) : null,
+    browser && voices.some((v) => voiceGender(v) === 'm') ? row('Man’s voice', pickFor('m', 'maleVoice')) : null,
     row('Different people', seg([[true, 'Mix voices'], [false, 'One voice']], s.voiceMix, (v) => set('voiceMix', v)),
       'Mix: lessons alternate between a woman’s and a man’s voice, and every story character speaks with their own voice — like hearing Korean from real people.'),
     row(`Speed: ${s.rate.toFixed(2)}×`, h('input', { type: 'range', min: 0.6, max: 1.25, step: 0.05, value: s.rate, onchange: (e) => set('rate', Number(e.target.value)) }), '1.00× is natural speaking speed.'),
     row('Slow everything down', seg([[false, 'Normal'], [true, 'Slow (turtle)']], s.slowAll, (v) => set('slowAll', v)),
-      'Every 🐢 button always plays slowly. This switch (also on Jiji’s corner) makes all Korean audio slower. The voice itself speaks slower — it is not stretched, so it does not crackle.'),
+      'Every 🐢 button always plays slowly. This switch (also on Jiji’s corner) makes all Korean audio slower. The voice itself speaks slower, in short phrases with little pauses, like a teacher would — it is not stretched, so it does not crackle.'),
     h('div', { class: 'stack', style: { gap: '6px' } }, h('b', null, 'Something sounds wrong?'),
       h('div', { class: 'row' }, NUDGES.map((n) => h('button', { class: 'btn ghost small', onclick: () => {
         const ch = n.apply(s);

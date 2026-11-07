@@ -42,7 +42,8 @@ const STEP = `(() => {
 async function run(route) {
   const profile = mkdtempSync(join(tmpdir(), 'dalbit-e2e-'));
   const dbg = 9300 + Math.floor(Math.random() * 500);
-  const proc = spawn(exe, ['--headless=new', '--disable-gpu', '--no-first-run', `--user-data-dir=${profile}`, `--remote-debugging-port=${dbg}`,
+  // Autoplay allowed: the scripted clicks are not trusted user gestures, but her real clicks are.
+  const proc = spawn(exe, ['--headless=new', '--disable-gpu', '--no-first-run', '--autoplay-policy=no-user-gesture-required', `--user-data-dir=${profile}`, `--remote-debugging-port=${dbg}`,
     `http://localhost:${port}/?demo=1&nosw#/${route}`], { stdio: 'ignore' });
   try {
     let target;
@@ -58,12 +59,17 @@ async function run(route) {
     ws.addEventListener('message', (e) => { const m = JSON.parse(e.data); if (pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); } });
     const evalJS = (expression) => new Promise((r) => { const i = ++id; pending.set(i, r); ws.send(JSON.stringify({ id: i, method: 'Runtime.evaluate', params: { expression, returnByValue: true } })); });
     await sleep(2500);
+    // Count what the voice did: studio clip vs browser-voice fallback (a fallback on course content = missing clip).
+    await evalJS(`window.__voice = { clip: 0, browser: [] };
+      { const p = HTMLMediaElement.prototype.play; HTMLMediaElement.prototype.play = function () { if (String(this.src).startsWith('blob:')) window.__voice.clip++; return p.call(this); }; }
+      if (window.speechSynthesis) { const s = speechSynthesis.speak.bind(speechSynthesis); speechSynthesis.speak = (u) => { window.__voice.browser.push(u.text); return s(u); }; }`);
+    const voice = async () => { const v = JSON.parse((await evalJS('JSON.stringify(window.__voice)')).result?.result?.value || '{}'); return `voice: ${v.clip} clips, ${v.browser?.length} browser${v.browser?.length ? ` (${v.browser.slice(0, 3).join(' | ')})` : ''}`; };
     const counts = {};
     for (let step = 0; step < 900; step++) {
       const res = (await evalJS(STEP)).result?.result?.value || 'none';
       const kind = res.split(':')[0];
       counts[kind] = (counts[kind] || 0) + 1;
-      if (res === 'done') { ws.close(); return `ok ${JSON.stringify(counts)}`; }
+      if (res === 'done') { const v = await voice(); ws.close(); return `ok ${JSON.stringify(counts)} ${v}`; }
       if (res.startsWith('error')) { ws.close(); return res; }
       await sleep(kind === 'match' ? 700 : kind === 'choice' || kind === 'check' ? 120 : 60);
     }

@@ -261,6 +261,8 @@
 
 ## 16. 음성 (자연스러운 TTS)
 
+- v1.2.0부터 기본 음성 = 스튜디오 음성 (21절), 이 절의 브라우저 음성은 대체 수단으로 유지
+  - 대체 사용 : AI 수업·질문 답변 등 클립 없는 문장, 설정에서 "Browser voice" 선택 시, 클립 재생 실패 시
 - 원칙 : 브라우저 신경망 음성 우선 사용, 기계음 음성은 대안 없을 때만 사용
   - Edge 제공 한국어 신경망 음성 : 선히 (여), 인준 (남), Hyunsu Multilingual (남)
   - Voice Lab 엔진은 동물 옹알이 합성기 → 자연 음성 생성 불가 → 미사용
@@ -337,7 +339,45 @@
   - Shot Height [compose.js SHOT_H]: 컷 종류별 세로 비율 (0.6 ~ 0.9)
   - Bust Scale [compose.js]: 1인 상반신 크기, 패널 폭 대비 (0.34)
 
-## 21. 미정 사항
+## 21. 스튜디오 음성 (사전 렌더링 신경망 TTS)
+
+- 목적 : 실제 사람 같은 한국어 음성, 브라우저·인터넷 연결과 무관하게 같은 소리
+- 엔진 : Supertonic 3 (Supertone, 2026.04 공개, ONNX, 44.1 kHz, 31개 언어, 프리셋 음성 10종)
+  - 모델 가중치 라이선스 : OpenRAIL-M (용도 제한형, 개인 학습 앱 사용 가능)
+  - 선정 이유 표 참고
+
+| 후보 | 결과 | 이유 |
+|---|---|---|
+| 클라우드 API (ElevenLabs, Gemini TTS, Typecast 등) | 미채택 | API 키·글자당 비용·네트워크 필요, CSP 허용 목록 확대 필요 |
+| 대형 오픈 모델 (VoxCPM2, Qwen3-TTS, Fish S2 등) | 미채택 | Python·PyTorch·GPU 환경 필요, 일부 비상업 라이선스 |
+| 브라우저 내 Supertonic 실행 | 미채택 | 약 400 MB 모델 다운로드 부담 |
+| Supertonic 3 사전 렌더링 | 채택 | Node만으로 생성 가능, 결과물은 작은 Opus 파일 |
+
+- 동작 방식
+  1. 빌드 도구가 코스의 모든 한국어 문장 수집 (단어, 예문, 이야기 대사, 입학 시험 음성, 읽기 문장 단위, Shift 단어)
+  2. 문장별 배역 음성으로 일반 속도·느린 속도 두 벌 생성 (Shift 단어는 일반 속도만)
+     - 느린 속도 : 문장을 약 7음절 구절로 나눠 조금 느리게 읽고 구절 사이 쉼 추가 (교사가 천천히 말하는 방식)
+     - 문장 전체를 늘리는 방식은 반복·누락 발생 → 미사용
+  3. 숫자 읽기 변환 (7시 → 일곱 시, 3번 출구 → 삼 번, 5,000원 → 오천 원)
+  4. 앞뒤 무음 제거, 페이드, 음량 −20 dBFS로 통일
+  5. Whisper 받아쓰기로 검사, 불명확한 클립은 다른 시드로 재녹음 (최대 3회)
+  6. Ogg Opus 32 kbps 저장, 파일 이름 = 음성·속도·문장 해시
+- 재생 순서 : 배역 음성 클립 → 같은 성별 클립 → 아무 클립 → 브라우저 음성
+- 오프라인 : 한 번 들은 클립은 서비스 워커 전용 캐시에 보관 (앱 업데이트 후에도 유지)
+- 배역 (voicecast.js CAST)
+  - 수업 : 여성 교사 F1, 남성 교사 M2 (같은 문장은 항상 같은 교사)
+  - 이야기 : 인물마다 고정 음성, 짧은 단어를 뭉개는 음성(F4, M3)은 짧은 대사가 적은 조연에만 사용
+- 관련 변수
+  - Voice Engine [settings.voiceEngine]: 스튜디오 / 브라우저 음성 선택 ('studio')
+  - Voice Speed [voicecast.js VOICES.speed]: 음성별 엔진 속도 (0.9 내외)
+  - Slow Factor [voicecast.js SLOW]: 느린 클립 속도 배율 (0.66)
+  - Slow Phrase [build-voice.mjs SLOW_PHRASE]: 느린 클립 구절 길이, 음절 수 (7)
+  - Slow Gap [build-voice.mjs SLOW_GAP / SLOW_GAP_END]: 구절 사이 쉼, 문장 끝 쉼 (0.4초 / 0.6초)
+  - Denoise Steps [build-voice.mjs STEPS]: 생성 단계 수 (8)
+  - Retakes [build-voice.mjs RETAKES]: 불명확 클립 재녹음 횟수 (3)
+  - Bitrate [build-voice.mjs BITRATE]: Opus 비트레이트 (32000)
+
+## 22. 미정 사항
 
 - 입학 시험 문항 난이도의 실제 응답 기반 보정 (미정)
 - TOPIK 3급 이상 정규 챕터 (미정)

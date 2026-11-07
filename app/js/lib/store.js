@@ -15,7 +15,7 @@ export function defaultState() {
       look: { hair: 'bob', hairColor: '#3b2a22', skin: '#f2d3bd', coat: '#e9dcc4' },
     },
     settings: {
-      minutes: 15, newPerDay: 10, romanization: 'auto', theme: 'auto', voice: '', rate: 1, maleVoice: '', voiceMix: true, slowAll: false,
+      minutes: 15, newPerDay: 10, romanization: 'auto', theme: 'auto', voice: '', rate: 1, maleVoice: '', voiceMix: true, slowAll: false, voiceEngine: 'studio',
       companion: true, bgm: { on: true, preset: 'moonlit', volume: 0.45 },
       speaking: true, storyEnglish: false, autoplay: true, sound: true,
     },

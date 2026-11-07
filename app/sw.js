@@ -1,7 +1,8 @@
 // Service worker: network-first for the app (so updates show up as soon as she's online),
 // cache fallback for offline, cache-first for fonts. BUILD is rewritten by tools/build.mjs.
-const BUILD = 'e519f1014b4b';
+const BUILD = '0a58b3552790';
 const CACHE = `dalbit-${BUILD}`;
+const VOICE_CACHE = 'voice-clips-1';
 
 self.addEventListener('install', (e) => {
   e.waitUntil((async () => {
@@ -35,8 +36,8 @@ async function networkFirst(req) {
   }
 }
 
-async function cacheFirst(req) {
-  const cache = await caches.open(CACHE);
+async function cacheFirst(req, name = CACHE) {
+  const cache = await caches.open(name);
   const hit = await cache.match(req);
   if (hit) return hit;
   const res = await fetch(req);
@@ -50,5 +51,9 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(req.url);
   if (url.hostname === 'fonts.gstatic.com' || url.hostname === 'fonts.googleapis.com') { e.respondWith(cacheFirst(req)); return; }
   if (url.origin !== self.location.origin) return;
+  // Studio voice clips never change (the name is a hash of voice + text), so they live in their own cache
+  // that survives app updates: once a line has been heard, it plays offline.
+  // Fetched by URL (no Range header) so the cache always holds the whole file, never a 206 piece.
+  if (url.pathname.includes('/voice/clips/')) { e.respondWith(cacheFirst(new Request(req.url), VOICE_CACHE)); return; }
   e.respondWith(networkFirst(req));
 });

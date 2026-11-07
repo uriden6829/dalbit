@@ -14,7 +14,8 @@ It is a static web app (`app/`): no installs, no server, works offline once open
 ```
 node tools/serve.mjs
 ```
-Open http://localhost:5173 in Microsoft Edge. (Edge has the best Korean voices; Chrome works too.)
+Open http://localhost:5173 in Microsoft Edge. (The built-in studio voices sound the same in every browser;
+Edge also has the best fallback voices for AI-written text.)
 
 ## One-time setup: put it online for her PC (≈10 minutes)
 
@@ -83,6 +84,7 @@ Claude reads `CLAUDE.md` (rules, where things are, how to verify) and publishes 
 
 - `app/` — the website (see `CLAUDE.md` for the map)
 - `tools/` — `serve.mjs` (preview), `validate.mjs` (content checks), `check-routes.mjs` (screen smoke test),
-  `shot.mjs` (screenshots), `build.mjs` (offline cache + icons), `release.mjs` (publish), `test/` (simulations)
+  `shot.mjs` (screenshots), `build.mjs` (offline cache + icons), `release.mjs` (publish), `test/` (simulations),
+  `voice/` (renders the studio voice clips in `app/voice/` with Supertonic 3 — run after any Korean content change)
 - `DESIGN.md` — design document (Korean)
 - `NOTES.md`, `HANDOFF.md` — task memory for Claude sessions

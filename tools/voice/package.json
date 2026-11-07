@@ -1,0 +1,14 @@
+{
+  "name": "dalbit-voice-builder",
+  "private": true,
+  "description": "Renders Dalbit's studio voice clips with Supertonic 3. Dev-only: nothing here is shipped to the app.",
+  "type": "module",
+  "scripts": {
+    "build": "node build-voice.mjs",
+    "check": "node build-voice.mjs --check"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "4.3.2",
+    "onnxruntime-node": "1.31.1"
+  }
+}
