@@ -6,3 +6,6 @@ Thumbs.db
 /shots/
 # voice builder: model weights + reports (tools/voice/build-voice.mjs downloads them)
 tools/voice/.models/
+# art lab: CLIP model + aesthetic head (tools/art/score.mjs downloads them) and rendered sheets
+tools/art/.models/
+tools/art/out/

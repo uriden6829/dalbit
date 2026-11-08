@@ -5,7 +5,8 @@ and installed on the learner's PC; her progress lives only in her browser. Every
 
 ## Hard rules
 - **Static and dependency-free.** Plain JS modules loaded by the browser; tools in `tools/` use only Node built-ins
-  (exception: the dev-only voice builder in `tools/voice/`, which needs onnxruntime-node).
+  (exceptions, both dev-only and never shipped: the voice builder in `tools/voice/` and the art lab in `tools/art/`,
+  which need transformers.js / onnxruntime-node).
 - **Text is data.** Render all text with `h()` from `app/js/lib/dom.js` (textContent). `trustedHTML` / `svg()` take
   only markup built in `app/js/art/`. Content from the AI, the web or a pasted reply goes through
   `app/js/ai/safety.js` `validatePack()` before it is stored or shown.
@@ -21,10 +22,20 @@ and installed on the learner's PC; her progress lives only in her browser. Every
 - Course content: `app/content/chapters/*.js`, registered in order in `app/content/index.js`. The row format is
   documented at the top of `app/content/dsl.js`; copy an existing chapter as the template.
 - Webtoon: Season 1 "달빛 배달부" is ONE continuous story in `app/content/story/season1.js` (one episode per chapter,
-  attached in `content/index.js`). Art engine v2 in `app/js/art/toon/`: `folk.js` (characters, moods, poses — FOLK),
-  `vista.js` (painted scenes — VISTAS), `compose.js` (shots, props, effects, panel → SVG). Bubbles are HTML in the
+  attached in `content/index.js`). Art engine v3 in `app/js/art/toon/`: `folk.js` (characters, moods — FOLK; faces are
+  CONSTRUCTED from `profile()` numbers + per-character `build`; whole bodies are a rig: `figure()` poses name hand/foot
+  targets and two-bone IK places elbows/knees), `vista.js` (painted scenes — VISTAS; `town()` builds the pastel harbour
+  town used by most outdoor scenes), `compose.js` (shots, props, effects, panel → SVG). Bubbles are HTML in the
   gutter (`ui/stories.js`). Draw/review: `node tools/toon.mjs sheet epNN` (look at it), `critique all`, `lab cast|moods|scenes`;
   dev page `app/toonlab.html`. Old flat engine (`art/scenes.js`, `people.js`, `panel.js`) is kept for AI-made packs.
+- Drawing method (DESIGN.md §23; research + measurements in task 70's NOTES.md): Claude draws by writing SVG, and is
+  weak at spotting its own geometry mistakes, so never judge a drawing alone. Build shapes from numbers (proportions,
+  joint targets), render, then LOOK at before/after side by side and zoomed: `node tools/art/ab.mjs <set> git:HEAD app
+  [--only=id] [--cell=480x600] [--grid]`. Back the eye with critics: `node tools/art/bench.mjs app <label> <sets>`
+  (sets: cast moods figures figcast scenes jiji panels; prints LAION aesthetic `aes`, CLIPScore `clipT`, cast
+  distinctness `nn`; relative signals — compare to `git:HEAD`, keep a change only if eye and numbers agree).
+  Once: `cd tools/art && npm install` (CLIP ViT-L/14 + aesthetic head download to git-ignored `tools/art/.models/`).
+  `ablate.mjs` tests which part of a drawing moved a score; `sanity.mjs` re-checks that the critics still work.
 - Dictionary for Shift breakdown + word bank: `app/js/lib/morph.js` (generates conjugations/particles), extra words in
   `app/content/lexicon.js`. New story/lesson Korean must be covered: `node tools/lexcheck.mjs` (validate fails otherwise).
 - Voice: STUDIO voices first — every course line is pre-rendered with Supertonic 3 (10 neural voices) into
@@ -34,8 +45,8 @@ and installed on the learner's PC; her progress lives only in her browser. Every
   so it does not sound like anyone it shares an episode with. **After changing any Korean content run
   `node tools/voice/build-voice.mjs --check`** (once: `cd tools/voice && npm install`; the model downloads to the
   git-ignored `tools/voice/.models/`). It renders only new/changed lines and deletes unused clips; validate warns
-  about lines without a clip (they fall back to the browser voice). `tools/voice/` is the ONE place with npm deps
-  (dev-only, never shipped). Numbers are read via `tools/voice/korean-numbers.mjs`. Playback test:
+  about lines without a clip (they fall back to the browser voice). `tools/voice/` and `tools/art/` are the only places
+  with npm deps (dev-only, never shipped). Numbers are read via `tools/voice/korean-numbers.mjs`. Playback test:
   `node tools/test/voice-play.mjs`. A two-person example conversation is written one turn per line
   (`'질문?\n대답.'`) and is read by two voices (voicecast `dialogueTurns`). Audio that plays when a question appears
   uses `speakSoon()` (cancelled if she answers first); answering, the next question and every route change stop the
@@ -50,7 +61,7 @@ and installed on the learner's PC; her progress lives only in her browser. Every
 
 ## Style of the product
 Pretty and calm, never tacky: parchment/ink-blue palette from CSS variables in `app/css/app.css`, serif display
-type, gold used sparingly, picture-book flat SVG art with no outlines. Korean must be natural and correct
+type, gold used sparingly, picture-book SVG art (webtoon: clean line art, one hue-shifted cel shadow, soft rim light). Korean must be natural and correct
 (polite 해요체 unless the scene calls for otherwise). Long practice beats short quizzes: new items climb a ladder
 of several exercise types (`LADDER` in `app/js/engine/exercises.js`) before they graduate.
 
@@ -61,6 +72,7 @@ of several exercise types (`LADDER` in `app/js/engine/exercises.js`) before they
    entrance test play through to their summary in a real headless browser.
 3. For visual work: `node tools/shot.mjs "/?demo=1&nosw#/story/ep02" shot.png 900 2400` and look at the image
    (`LIGHT=1` for the parchment theme). `?demo=1` seeds a demo learner in the throwaway browser profile.
+   Art changes: `node tools/art/ab.mjs <set> git:HEAD app` (look) and `node tools/art/bench.mjs` (numbers), see above.
 4. Engine changes: `node tools/test/session-sim.mjs <lessonId>` and `node tools/test/placement-sim.mjs`.
 
 ## Publish to her PC

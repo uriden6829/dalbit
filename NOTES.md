@@ -94,3 +94,17 @@ reading + speaking focus, story-based memory, periodic recaps.
   reasoning in DESIGN.md §22. Jiji: low dry alto between the women and the men (F5/M1/M4, speed 0.82), a she.
 - Jiji says the Korean in her corner bubbles aloud (pet / session end / slow toggle), own clip only, settings.jijiVoice.
 - Settings → Voice → Meet the cast (voicecast.js CAST_INTRO). Corner lines moved into content/jiji-lines.js.
+
+## Task 70 — art engine v3: how Claude draws better (research + lab: ../70-similar-to-how-you-did-deep-research-abo/NOTES.md)
+- Research (Nov 2026): render→critique→revise loops lift text-to-SVG quality (IntroSVG, CVPR 2026); VLMs are poor at
+  spotting their own geometric errors (CTRL-S, arXiv 2608.28678) → method: construct from numbers, render, compare
+  before/after side by side + zoomed, back the eye with critics. Full method: DESIGN.md §23, CLAUDE.md "Drawing method".
+- `tools/art/` (dev-only npm, like tools/voice): render.mjs (headless Edge via DevTools), score.mjs (CLIP ViT-L/14 →
+  LAION aesthetic `aes`, CLIPScore `clipT`, CLIP-IQA `iqa`, embeddings), sets.mjs (cast, moods, figures, figcast,
+  scenes, jiji, panels; engines `app` or `git:<ref>`), bench.mjs, ab.mjs, ablate.mjs, sanity.mjs.
+- Jiji (art/jiji.js): sitting-cat construction, moonlit rim (reads on night blue), bigger round eyes; same API, viewBox,
+  CSS animation pivots. Faces (folk.js profile/build): per-character jaw/chin/eyes/brows/neck, age marks, tapered brows,
+  sloped shoulders; new hair 'fringe' (clerk), 'crop' (man, baker); baker square glasses; staff bun.
+  Bodies: figure() rig with IK (poses = hand/foot targets), tapered tube limbs, hands, outfit silhouettes.
+  Scenes (vista.js): town() pastel harbour village (used by most outdoor scenes), harbour boats + pier, bus stop.
+- Verified: validate OK, check-routes all routes, e2e 4/4 (0 browser voice fallbacks), screenshots home/welcome/story.

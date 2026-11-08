@@ -1,0 +1,13 @@
+{
+  "name": "dalbit-art-lab",
+  "private": true,
+  "description": "Render, compare and score Dalbit's code-drawn art (CLIP + LAION aesthetic critics). Dev-only: nothing here is shipped to the app.",
+  "type": "module",
+  "scripts": {
+    "bench": "node bench.mjs",
+    "sanity": "node sanity.mjs"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "4.3.2"
+  }
+}

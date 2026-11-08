@@ -43,22 +43,54 @@ export function sky(W, H, time = 'night', { moon = null, stars = 60, clouds = 3,
 }
 
 // A row of hillside houses with lit windows. depth 0 (near) .. 1 (far, hazier)
+// A row of houses standing on the line y (they run 40 units below it, for stacking rows up a hillside).
+// Built like a Korean harbour town: pastel walls, teal / blue / terracotta tin roofs, flat-roofed villas with rooftop
+// water tanks, the odd tiled hanok roof and a narrow apartment block. depth 0 = near row, 1 = far: farther rows are
+// smaller, lose doors and detail, and fade toward the haze colour (atmospheric perspective).
+const WALLS = ['#eadbc6', '#d5e2e8', '#f0d6c6', '#dde6cf', '#efe2b6', '#e4d2de', '#cddbea', '#f2e9dc'];
+const ROOFS = ['#4f8290', '#5d86ad', '#b5634f', '#5f8a6a', '#7f6a9a', '#3f6280', '#c47f52'];
 export function town(W, y, { seed = 5, depth = 0.5, time = 'night', h = 40, lit = true } = {}) {
   const R = rng(seed);
-  const night = isNight(time);
-  const base = night ? mix('#2a2d55', '#5a5e8e', depth * 0.7) : time === 'dusk' ? mix('#6b4f6e', '#b48a8e', depth) : mix('#8a7a72', '#c9c4c8', depth);
-  let out = '', x = -10;
+  const night = isNight(time), dusk = time === 'dusk', sepia = time === 'sepia';
+  const haze = night ? '#2b2f5e' : dusk ? '#9c7a92' : sepia ? '#b9a07a' : '#c9d8e6';
+  const fade = 0.15 + depth * 0.55;
+  const tone = (c) => {
+    let k = sepia ? mix(c, '#b79a72', 0.7) : night ? mix(shade(c, 0.5, 280), '#262a55', 0.45) : dusk ? mix(c, '#b07a86', 0.38) : c;
+    return mix(k, haze, fade);
+  };
+  const win = night ? '#ffd88a' : dusk ? '#f3c79a' : '#a9c1d4';
+  let out = '', x = -10 - R() * 10;
   while (x < W + 10) {
-    const w = 18 + R() * 26, hh = h * (0.6 + R() * 0.6), roof = R() < 0.6;
-    const col = mix(base, night ? '#1d1f3e' : '#6e5e58', R() * 0.3);
-    out += `<rect x="${r1(x)}" y="${r1(y - hh)}" width="${r1(w)}" height="${r1(hh + 40)}" fill="${col}"/>`;
-    if (roof) out += `<path d="M${r1(x - 3)} ${r1(y - hh)} L${r1(x + w / 2)} ${r1(y - hh - w * 0.38)} L${r1(x + w + 3)} ${r1(y - hh)}Z" fill="${shade(col, 0.06)}"/>`;
-    if (lit) for (let k = 0; k < 2; k++) if (R() < (night ? 0.7 : 0.25)) {
-      const wx = x + 4 + R() * (w - 10), wy = y - hh + 6 + R() * (hh - 14);
-      out += `<rect x="${r1(wx)}" y="${r1(wy)}" width="4.5" height="5.5" fill="${night ? '#ffd88a' : '#d9e3ea'}" opacity="${night ? 0.9 - depth * 0.3 : 0.7}"/>`;
-      if (night && depth < 0.6) out += glow(wx + 2, wy + 3, 10, '#ffcf7a', 0.25);
+    const kind = R(), w = (16 + R() * 24) * (h / 34), wall = tone(WALLS[Math.floor(R() * WALLS.length)]), roof = tone(ROOFS[Math.floor(R() * ROOFS.length)]);
+    const floors = kind > 0.86 ? 3 + Math.floor(R() * 2) : 1 + Math.floor(R() * 2), fh = h * 0.42;
+    const bh = floors * fh + h * 0.12, top = y - bh, side = shade(wall, 0.1, 280);
+    out += `<rect x="${r1(x)}" y="${r1(top)}" width="${r1(w)}" height="${r1(bh + 40)}" fill="${wall}"/><rect x="${r1(x + w * 0.72)}" y="${r1(top)}" width="${r1(w * 0.28)}" height="${r1(bh + 40)}" fill="${side}" opacity=".8"/>`;
+    if (kind < 0.42) { // pitched tin roof with eaves
+      const rh = w * 0.34;
+      out += `<path d="M${r1(x - 3)} ${r1(top + 1)} L${r1(x + w * 0.5)} ${r1(top - rh)} L${r1(x + w + 3)} ${r1(top + 1)}Z" fill="${roof}"/><path d="M${r1(x + w * 0.5)} ${r1(top - rh)} L${r1(x + w + 3)} ${r1(top + 1)} L${r1(x + w * 0.5)} ${r1(top + 1)}Z" fill="${shade(roof, 0.08)}"/><path d="M${r1(x - 3)} ${r1(top + 1)} H${r1(x + w + 3)}" stroke="${shade(roof, 0.18)}" stroke-width="1.6"/>`;
+    } else if (kind < 0.52) { // hanok: dark tiled roof with upturned eaves
+      const rh = w * 0.22, rc = tone('#4a4d5a');
+      out += `<path d="M${r1(x - 6)} ${r1(top - rh * 0.55)} Q${r1(x + w * 0.1)} ${r1(top + 2)} ${r1(x + w * 0.25)} ${r1(top - rh * 0.2)} L${r1(x + w * 0.5)} ${r1(top - rh)} L${r1(x + w * 0.75)} ${r1(top - rh * 0.2)} Q${r1(x + w * 0.9)} ${r1(top + 2)} ${r1(x + w + 6)} ${r1(top - rh * 0.55)} L${r1(x + w + 4)} ${r1(top + 3)} L${r1(x - 4)} ${r1(top + 3)}Z" fill="${rc}"/><path d="M${r1(x + w * 0.25)} ${r1(top - rh * 0.2)} L${r1(x + w * 0.5)} ${r1(top - rh)} L${r1(x + w * 0.75)} ${r1(top - rh * 0.2)}" stroke="${tint(rc, 0.12)}" stroke-width="1.4" fill="none"/>`;
+    } else { // flat roof: parapet, sometimes a water tank or a railing
+      out += `<rect x="${r1(x - 1)}" y="${r1(top - 3)}" width="${r1(w + 2)}" height="4" fill="${shade(wall, 0.14, 280)}"/>`;
+      const z = R();
+      if (z < 0.4 && depth < 0.8) { const tx = x + w * (0.15 + R() * 0.4), tw = Math.min(9, w * 0.3) * (h / 34); out += `<rect x="${r1(tx)}" y="${r1(top - tw * 0.9 - 3)}" width="${r1(tw)}" height="${r1(tw * 0.9)}" rx="${r1(tw * 0.3)}" fill="${tone('#4f7fb0')}"/><path d="M${r1(tx)} ${r1(top - tw * 0.55 - 3)} h${r1(tw)}" stroke="${tone('#3f6a96')}" stroke-width="1"/>`; }
+      else if (z < 0.6) out += `<path d="M${r1(x + 2)} ${r1(top - 8)} H${r1(x + w - 2)} M${r1(x + 2)} ${r1(top - 8)} V${r1(top - 3)} M${r1(x + w * 0.5)} ${r1(top - 8)} V${r1(top - 3)} M${r1(x + w - 2)} ${r1(top - 8)} V${r1(top - 3)}" stroke="${shade(wall, 0.25)}" stroke-width="1"/>`;
     }
-    x += w + R() * 3;
+    // windows: a small grid, some lit at night
+    if (lit) {
+      const cols = w > 26 * (h / 34) ? 2 : 1, ww = Math.max(2.5, w * 0.16), wh = fh * 0.42;
+      for (let f = 0; f < floors; f++) for (let k = 0; k < cols; k++) {
+        if (R() < 0.18) continue;
+        const wx = x + (cols === 1 ? w * 0.36 : w * (0.18 + k * 0.42)), wy = top + h * 0.12 + f * fh + fh * 0.2;
+        const on = night ? R() < 0.62 : dusk ? R() < 0.35 : false;
+        out += `<rect x="${r1(wx)}" y="${r1(wy)}" width="${r1(ww)}" height="${r1(wh)}" fill="${on ? win : shade(wall, night ? 0.12 : 0.22, 260)}" opacity="${on ? r1(0.95 - depth * 0.35) : 0.9}"/>`;
+        if (!night && !dusk && depth < 0.7) out += `<rect x="${r1(wx)}" y="${r1(wy)}" width="${r1(ww)}" height="${r1(wh * 0.35)}" fill="#fff" opacity=".35"/>`;
+        if (on && depth < 0.6) out += glow(wx + ww / 2, wy + wh / 2, 9 + ww, '#ffcf7a', 0.22);
+      }
+      if (depth < 0.35 && w > 18) out += `<rect x="${r1(x + w * 0.2)}" y="${r1(y - fh * 0.62)}" width="${r1(w * 0.2)}" height="${r1(fh * 0.62)}" fill="${shade(wall, 0.35, 30)}"/>`;
+    }
+    x += w + (R() < 0.3 ? R() * 4 : -1);
   }
   return out;
 }
@@ -226,14 +258,33 @@ export const VISTAS = {
     return { bg, ground: H * 0.97 };
   },
   harbour(W, H, o) {
-    const t = o.time || 'day';
-    let bg = sky(W, H, t, { moon: isNight(t) && t !== 'storm' ? [W * 0.8, H * 0.15, 14] : null, clouds: 4, seed: 71 });
+    const t = o.time || 'day', night = isNight(t), dusk = t === 'dusk', sepia = t === 'sepia';
+    let bg = sky(W, H, t, { moon: night && t !== 'storm' ? [W * 0.8, H * 0.15, 14] : null, clouds: 4, seed: 71 });
+    bg += hillShape(W, H * 0.4, 18, 7, night ? '#262a52' : dusk ? '#6d587a' : sepia ? '#a08a68' : '#9bb3b8');
+    bg += town(W, H * 0.45, { seed: 72, depth: 0.62, time: t, h: 13 });
     bg += sea(W, H * 0.45, H, t, W * 0.6);
-    bg += town(W, H * 0.45, { seed: 72, depth: 0.7, time: t, h: 18 });
-    for (let i = 0; i < 3; i++) { const x = W * (0.15 + i * 0.32), y = H * 0.58; bg += `<path d="M${x - 30} ${y} L${x + 30} ${y} L${x + 22} ${y + 12} L${x - 24} ${y + 12}Z" fill="${['#b8524c', '#4f6d8c', '#e3d6b8'][i]}"/><path d="M${x} ${y} V${y - 42}" stroke="#4a3f3a" stroke-width="2"/><path d="M${x} ${y - 40} L${x + 20} ${y - 8} L${x} ${y - 8}Z" fill="#f2ede4" opacity=".9"/>`; }
-    bg += floor(W, H * 0.7, H, '#8a7a6a', '#6e6052');
-    for (let i = 0; i < 8; i++) bg += `<rect x="${W * i / 8}" y="${H * 0.7}" width="2" height="${H * 0.3}" fill="#5a4e44" opacity=".5"/>`;
-    bg += `<path d="M${W * 0.2} ${H * 0.2} q6 -5 12 0 q6 -5 12 0 M${W * 0.62} ${H * 0.26} q5 -4 10 0 q5 -4 10 0" stroke="#3a3a48" stroke-width="1.6" fill="none"/>`;
+    bg += `<rect x="0" y="${H * 0.45}" width="${W}" height="2" fill="${night ? '#3a3f6a' : '#e8eef2'}" opacity=".3"/>`;
+    // fishing boats: hull with a painted band, wheelhouse, mast with a flag, reflection
+    const boat = (x, y, s, hull, band, flip) => {
+      const k = flip ? -1 : 1, tone = (c) => (night ? mix(shade(c, 0.35), '#2a2f5a', 0.4) : sepia ? mix(c, '#a88b67', 0.6) : dusk ? mix(c, '#a87a8a', 0.25) : c);
+      return `<g transform="translate(${r1(x)} ${r1(y)}) scale(${r1(k * s)} ${r1(s)})">
+        <path d="M-34 -2 Q-36 10 -26 12 L28 12 Q36 6 40 -6Z" fill="${tone('#ffffff')}" opacity=".18" transform="scale(1 -1) translate(0 -24)"/>
+        <path d="M-38 -10 L42 -10 Q36 6 26 10 L-28 10 Q-36 4 -38 -10Z" fill="${tone(hull)}"/>
+        <path d="M-38 -10 L42 -10 L40 -5 L-37 -5Z" fill="${tone(band)}"/><path d="M-30 4 Q0 8 30 4" stroke="${tone(shade(hull, 0.2))}" stroke-width="1.4" fill="none"/>
+        <path d="M-6 -10 L-6 -26 L18 -26 L22 -10Z" fill="${tone('#f2efe8')}"/><path d="M-6 -27 L19 -27 L18 -30 L-5 -30Z" fill="${tone(band)}"/>
+        <rect x="-2" y="-22" width="6" height="6" fill="${night ? '#ffd88a' : tone('#7fa6c4')}"/><rect x="7" y="-22" width="6" height="6" fill="${night ? '#ffd88a' : tone('#7fa6c4')}"/>
+        <path d="M-22 -10 V-48 M-22 -44 L10 -26" stroke="${tone('#4a3f3a')}" stroke-width="1.6"/><path d="M-22 -48 l10 3 l-10 3Z" fill="${tone('#d8574a')}"/></g>`;
+    };
+    bg += boat(W * 0.18, H * 0.585, H / 300 * 0.9, '#3f5f8a', '#d8574a', false) + boat(W * 0.56, H * 0.6, H / 300 * 0.75, '#e9e2d4', '#3f8a7a', true) + boat(W * 0.86, H * 0.575, H / 300 * 0.55, '#b5634f', '#f2e2b8', false);
+    // pier in perspective: planks run toward the viewer, a stone edge, bollards and a coil of rope
+    const py = H * 0.68, wood = night ? '#4a4258' : dusk ? '#8a6f72' : sepia ? '#8d7556' : '#9b8569', woodD = shade(wood, 0.12);
+    bg += `<path d="M0 ${py} L${W} ${py} L${W} ${H} L0 ${H}Z" fill="${wood}"/><path d="M0 ${py} L${W} ${py} L${W} ${py + 7} L0 ${py + 7}Z" fill="${shade(wood, 0.22)}"/>`;
+    for (let i = -6; i <= 6; i++) bg += `<path d="M${r1(W / 2 + i * W * 0.06)} ${r1(py + 7)} L${r1(W / 2 + i * W * 0.16)} ${H}" stroke="${woodD}" stroke-width="1.6"/>`;
+    for (let i = 0; i < 4; i++) { const yy = py + 7 + (H - py) * (i * i + 1) / 18; bg += `<path d="M0 ${r1(yy)} H${W}" stroke="${woodD}" stroke-width="1" opacity=".5"/>`; }
+    const bollard = (x, s) => `<g transform="translate(${r1(x)} ${r1(py + 4)}) scale(${r1(s)})"><path d="M-7 0 V-14 Q-7 -19 0 -19 Q7 -19 7 -14 V0Z" fill="${night ? '#2a2838' : '#3d3a46'}"/><ellipse cx="0" cy="-18" rx="9" ry="3" fill="${night ? '#3a3850' : '#55525e'}"/></g>`;
+    bg += bollard(W * 0.08, H / 300) + bollard(W * 0.93, H / 300);
+    bg += `<g transform="translate(${r1(W * 0.12)} ${r1(py + 2)}) scale(${r1(H / 300)})"><path d="M8 -12 Q30 -18 52 -6" stroke="${night ? '#9a8a7a' : '#c9b48a'}" stroke-width="2.2" fill="none"/><ellipse cx="62" cy="-2" rx="12" ry="5" fill="none" stroke="${night ? '#9a8a7a' : '#c9b48a'}" stroke-width="3"/><ellipse cx="62" cy="-3" rx="6" ry="2.4" fill="none" stroke="${night ? '#9a8a7a' : '#c9b48a'}" stroke-width="2"/></g>`;
+    bg += `<path d="M${W * 0.2} ${H * 0.2} q6 -5 12 0 q6 -5 12 0 M${W * 0.62} ${H * 0.26} q5 -4 10 0 q5 -4 10 0" stroke="${night ? '#c9cbe6' : '#3a3a48'}" stroke-width="1.6" fill="none"/>`;
     return { bg, ground: H * 0.97 };
   },
   market(W, H, o) {
@@ -263,9 +314,22 @@ export const VISTAS = {
   },
   busstop(W, H, o) {
     const t = o.time || 'dusk';
-    let bg = sky(W, H, t, { clouds: 3, seed: 101 }) + town(W, H * 0.6, { seed: 102, depth: 0.5, time: t, h: 40 });
-    bg += floor(W, H * 0.62, H, '#6a6470', '#4e4856') + `<rect x="0" y="${H * 0.62}" width="${W}" height="5" fill="#9a94a0"/>`;
-    bg += `<rect x="${W * 0.7}" y="${H * 0.18}" width="4" height="${H * 0.5}" fill="#3a3a48"/>` + signBoard(W * 0.62, H * 0.12, W * 0.2, H * 0.1, '정류장', { bg: '#2f6d5a', fg: '#fff', size: Math.min(W, H) * 0.04, font: 'Noto Sans KR, sans-serif' });
+    const night = isNight(t);
+    let bg = sky(W, H, t, { clouds: 3, seed: 101 }) + town(W, H * 0.5, { seed: 104, depth: 0.75, time: t, h: 26 }) + town(W, H * 0.6, { seed: 102, depth: 0.4, time: t, h: 40 });
+    // road (far) → curb → pavement (near) with tiles in perspective
+    bg += floor(W, H * 0.6, H * 0.7, night ? '#3a3648' : '#6a6470', night ? '#2e2b3c' : '#5a5462');
+    bg += `<path d="M0 ${H * 0.65} H${W}" stroke="${night ? '#8a8060' : '#e8d9a0'}" stroke-width="2" stroke-dasharray="18 14" opacity=".7"/>`;
+    bg += `<rect x="0" y="${H * 0.7}" width="${W}" height="${H * 0.025}" fill="${night ? '#6a6478' : '#b4aeb8'}"/>` + floor(W, H * 0.725, H, night ? '#5a5468' : '#a49ca6', night ? '#4a4458' : '#8c8490');
+    for (let i = -8; i <= 8; i++) bg += `<path d="M${r1(W / 2 + i * W * 0.07)} ${r1(H * 0.725)} L${r1(W / 2 + i * W * 0.14)} ${H}" stroke="#000" stroke-opacity=".08" stroke-width="1.2"/>`;
+    for (let i = 0; i < 4; i++) bg += `<path d="M0 ${r1(H * 0.725 + (H * 0.275) * (i * i + 1) / 17)} H${W}" stroke="#000" stroke-opacity=".08" stroke-width="1"/>`;
+    // bus shelter: glass back wall, roof, bench
+    const sx = W * 0.04, sw = W * 0.4, st = H * 0.36, sb = H * 0.74;
+    bg += `<rect x="${sx}" y="${st}" width="${sw}" height="${sb - st}" fill="#cfe3ee" opacity="${night ? 0.18 : 0.3}"/><path d="M${sx} ${st} V${sb} M${sx + sw} ${st} V${sb} M${sx + sw * 0.5} ${st} V${sb}" stroke="${night ? '#4a4a5e' : '#5a5e6e'}" stroke-width="3"/>`;
+    bg += `<path d="M${sx - 8} ${st} L${sx + sw + 10} ${st - 6} L${sx + sw + 10} ${st + 4} L${sx - 8} ${st + 8}Z" fill="${night ? '#3a5a50' : '#2f6d5a'}"/>`;
+    bg += `<rect x="${sx + sw * 0.1}" y="${H * 0.6}" width="${sw * 0.8}" height="${H * 0.025}" rx="2" fill="${night ? '#6a5a4a' : '#9a7a5a'}"/><path d="M${sx + sw * 0.16} ${H * 0.625} V${H * 0.7} M${sx + sw * 0.84} ${H * 0.625} V${H * 0.7}" stroke="#4a4a5a" stroke-width="3"/>`;
+    if (night) bg += glow(sx + sw * 0.5, st + 12, sw * 0.6, '#fff0c0', 0.25) + `<rect x="${sx + sw * 0.3}" y="${st + 6}" width="${sw * 0.4}" height="3" rx="1.5" fill="#fff6d8"/>`;
+    bg += lamp(W * 0.92, H * 0.3, 1.1, night || t === 'dusk');
+    bg += `<rect x="${W * 0.7}" y="${H * 0.18}" width="4" height="${H * 0.56}" fill="#3a3a48"/><ellipse cx="${W * 0.7 + 2}" cy="${H * 0.74}" rx="7" ry="2.5" fill="#000" opacity=".2"/>` + signBoard(W * 0.62, H * 0.12, W * 0.2, H * 0.1, '정류장', { bg: '#2f6d5a', fg: '#fff', size: Math.min(W, H) * 0.04, font: 'Noto Sans KR, sans-serif' });
     bg += `<rect x="${W * 0.6}" y="${H * 0.26}" width="${W * 0.22}" height="${H * 0.14}" rx="2" fill="#f2ede4"/><text x="${W * 0.71}" y="${H * 0.31}" text-anchor="middle" font-family="Noto Sans KR" font-size="${Math.min(W, H) * 0.03}" fill="#2a2840">7번 → 등대</text><text x="${W * 0.71}" y="${H * 0.37}" text-anchor="middle" font-family="Noto Sans KR" font-size="${Math.min(W, H) * 0.03}" fill="#2a2840">3번 → 시장</text>`;
     return { bg, ground: H * 0.96 };
   },
