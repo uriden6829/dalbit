@@ -26,7 +26,7 @@ const CLIPS = path.join(OUT, 'clips');
 const MODEL = path.join(HERE, '.models', 'supertonic-3');
 const MODEL_URL = 'https://huggingface.co/Supertone/supertonic-3/resolve/3cadd1ee6394adea1bd021217a0e650ede09a323';
 const MODEL_FILES = ['onnx/tts.json', 'onnx/unicode_indexer.json', 'onnx/duration_predictor.onnx', 'onnx/text_encoder.onnx', 'onnx/vector_estimator.onnx', 'onnx/vocoder.onnx', 'LICENSE',
-  ...Object.keys(VOICES).filter((v) => !VOICES[v].mix).map((v) => `voice_styles/${v}.json`)];
+  ...['F1', 'F2', 'F3', 'F4', 'F5', 'M1', 'M2', 'M3', 'M4', 'M5'].map((v) => `voice_styles/${v}.json`)]; // the ten presets every voice is made from
 
 // Engine settings chosen in the build iterations (task-69 NOTES.md). Changing any of them: bump STUDIO_VERSION.
 const STEPS = 8; // denoising steps: 16 measured no clearer than 8

@@ -1,7 +1,7 @@
 // Session player: renders exercises, gives feedback, and wraps up with a summary.
 import { h, svg, toast, sleep } from '../lib/dom.js';
 import { getState, update, save, logActivity } from '../lib/store.js';
-import { speak, stopSpeaking, hasSTT, listen, record } from '../lib/speech.js';
+import { speak, speakSoon, stopSpeaking, hasSTT, listen, record } from '../lib/speech.js';
 import { similarity, alignSyllables, romanize } from '../lib/hangul.js';
 import { mastery } from '../lib/srs.js';
 import { Session } from '../engine/session.js';
@@ -60,6 +60,7 @@ export function render({ params }, { go, onLeave }) {
   }
 
   function next() {
+    stopSpeaking(); // a new question starts in silence, whatever was still playing
     const ex = session.next();
     barFill.style.width = `${Math.round(session.progress() * 100)}%`;
     count.textContent = `${session.stats.ex} done`;
@@ -228,7 +229,7 @@ function choiceView(ex, { stage, roman, setKeys, done }) {
   if (p.audio) {
     const reveal = h('button', { class: 'linkish small', onclick: () => { hinted = true; reveal.replaceWith(h('div', { class: 'ko', style: { fontSize: '1.4rem', marginTop: '8px' } }, p.audio)); } }, 'Show text');
     promptEl.append(h('div', { class: 'row', style: { justifyContent: 'center' } }, speakBtn(p.audio, { big: true }), slowBtn(p.audio)), h('div', { style: { marginTop: '8px' } }, reveal));
-    setTimeout(() => speak(p.audio), 250);
+    speakSoon(p.audio, {}, 250);
   }
   if (p.ko && ex.variant === 'recognize') {
     const hear = h('button', { class: 'linkish small', onclick: () => { hinted = true; speak(p.ko); } }, 'Hint: listen');
@@ -243,7 +244,8 @@ function choiceView(ex, { stage, roman, setKeys, done }) {
     const correct = i === ex.answer;
     opts.forEach((b, j) => { b.disabled = true; if (j === ex.answer) b.classList.add('right'); else if (j === i) b.classList.add('wrong'); });
     idk.remove();
-    if (p.speakAfter && correct) speak(p.speakAfter);
+    // Answered: the question's audio stops (she may answer before it ends); a right answer is read out.
+    if (p.speakAfter && correct) speak(p.speakAfter); else stopSpeaking();
     done({ correct, hinted });
   }
   setKeys((e) => { const i = KEYS.indexOf(e.key); if (i >= 0 && i < opts.length) choose(i); });
@@ -281,6 +283,7 @@ function tilesView(ex, { stage, setKeys, done }) {
     const correct = got === want;
     answerEl.style.borderColor = correct ? 'var(--sage)' : 'var(--rose)';
     if (!correct) answerEl.append(h('div', { class: 'small muted', style: { width: '100%', textAlign: 'center' } }, 'You built: ', got));
+    stopSpeaking();
     check.remove();
     clear.remove();
     stage.querySelector('.tiles-bank').replaceChildren(listenBtn);
@@ -306,7 +309,7 @@ function speakView(ex, { stage, roman, setKeys, done, session }) {
       h('div', { class: 'row', style: { justifyContent: 'center', marginTop: '10px' } }, speakBtn(t.ko), slowBtn(t.ko))));
   const area = h('div', { class: 'speak-area' });
   stage.append(area);
-  setTimeout(() => speak(t.ko), 200);
+  speakSoon(t.ko, {}, 200);
   if (hasSTT()) {
     const mic = h('button', { class: 'mic-btn', title: 'Speak', onclick: go }, svg(`<svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3zM5 11a7 7 0 0 0 14 0M12 18v3"/></svg>`));
     area.append(mic, status, heard, skip);

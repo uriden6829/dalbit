@@ -11,7 +11,7 @@
 // Slow reading lowers the voice's own speaking rate, so slow audio stays smooth instead of being cut into pieces.
 
 import { emit } from './bus.js';
-import { VOICES, TEACHERS, castVoice, clipName, speechText } from './voicecast.js';
+import { VOICES, TEACHERS, castVoice, clipName, speechText, dialogueTurns } from './voicecast.js';
 
 let voices = [];
 let prefs = { voice: '', rate: 1, mix: true, slow: false, maleVoice: '', engine: 'studio' };
@@ -159,30 +159,49 @@ function chunks(text) {
   return clean.split(/(?<=[.!?。…])\s+/).filter(Boolean);
 }
 
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
 // speak(text, { rate, pitch, who, slow, gender, studioOnly })  — resolves when finished (or interrupted).
 // studioOnly: say nothing unless the speaker's own studio clip exists (Jiji's voice, never a stand-in).
+// A conversation (one turn per line, "주말에 뭐 할 거예요?\n친구 결혼식이…") is read by two people taking turns.
 export function speak(text, o = {}) {
   if (!hasTTS() || !text) return Promise.resolve();
   if (o.studioOnly && !(useStudio() && studio.get(speechText(text))?.includes(castVoice(speechText(text), o.who)))) return Promise.resolve();
   stopSpeaking();
   const token = speakToken;
+  const turns = o.gender ? [[String(text), TEACHERS[o.gender]]] : dialogueTurns(text, o.who, prefs.mix);
+  emit('tts', { on: true, text, who: o.who || '' });
+  return (async () => {
+    for (const [i, [t, voice]] of turns.entries()) {
+      if (token !== speakToken) return;
+      if (i) await wait(o.slow || prefs.slow ? 650 : 450); // a breath between speakers
+      await sayTurn(t, voice, turns.length > 1 ? { ...o, gender: VOICES[voice]?.g } : o, token);
+    }
+    if (token === speakToken) emit('tts', { on: false });
+  })();
+}
+
+// Autoplay when a question appears. Skipped if anything stops or replaces the audio before it starts — she
+// answered, moved on, or pressed a play button herself — so a late timer never talks over the next screen.
+export function speakSoon(text, o = {}, ms = 250) {
+  const token = speakToken;
+  setTimeout(() => { if (token === speakToken) speak(text, o); }, ms);
+}
+
+async function sayTurn(text, voice, o, token) {
   if (useStudio()) {
-    const voice = o.gender ? TEACHERS[o.gender] : castVoice(speechText(text), o.who, prefs.mix);
     const plan = studioPlan(String(text), voice, !!o.slow || prefs.slow);
     if (plan) {
       // 🐢 with the global slow switch also on: the slow clip, a touch slower still.
       if (o.slow && prefs.slow) for (const c of plan) c.rate *= 0.88;
       plan.forEach((c) => loadClip(c.url));
-      emit('tts', { on: true, text, who: o.who || '' });
-      return (async () => {
-        for (const [i, clip] of plan.entries()) {
-          if (token !== speakToken) return;
-          if (i) await new Promise((r) => setTimeout(r, o.slow ? 380 : 220));
-          // A clip that can't play (offline and not cached yet) is read by the browser voice instead.
-          if (!(await playClip(clip, token)) && token === speakToken) { await browserSpeak(text, o, token); return; }
-        }
-        if (token === speakToken) emit('tts', { on: false });
-      })();
+      for (const [i, clip] of plan.entries()) {
+        if (token !== speakToken) return;
+        if (i) await wait(o.slow ? 380 : 220);
+        // A clip that can't play (offline and not cached yet) is read by the browser voice instead.
+        if (!(await playClip(clip, token)) && token === speakToken) return browserSpeak(text, o, token);
+      }
+      return;
     }
   }
   return browserSpeak(text, o, token);
@@ -199,7 +218,6 @@ function browserSpeak(text, { rate = 1, pitch = 1, who = '', slow = false, gende
   const r = Math.max(0.45, Math.min(1.6, prefs.rate * rate * (per.rate || 1) * slowF));
   // Robotic voices get no pitch tricks (they sound worse); natural ones get the persona's shift.
   const p = Math.max(0.6, Math.min(1.5, pitch * (natural ? per.pitch || 1 : 1)));
-  emit('tts', { on: true, text, who });
   const run = parts.reduce((prev, part, i) => prev.then(() => new Promise((res) => {
     if (token !== speakToken) return res();
     const u = new SpeechSynthesisUtterance(part);
@@ -214,7 +232,7 @@ function browserSpeak(text, { rate = 1, pitch = 1, who = '', slow = false, gende
     const guard = setTimeout(end, (3000 + part.length * 420) / r);
     speechSynthesis.speak(u);
   })), Promise.resolve());
-  return run.then(() => { if (token === speakToken) emit('tts', { on: false }); });
+  return run;
 }
 export const speakSlow = (text, o = {}) => speak(text, { ...o, slow: true });
 

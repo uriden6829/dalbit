@@ -1,5 +1,6 @@
 // Studio voice playback in a real headless browser: covered lines play their Ogg clip (normal / slow / per
-// character), uncovered lines and the "Browser voice" setting go to speechSynthesis. Needs node tools/serve.mjs.
+// character), uncovered lines and the "Browser voice" setting go to speechSynthesis, conversations take turns in two
+// voices, and moving on (stop, answer before autoplay, route change) silences the line. Needs node tools/serve.mjs.
 //   node tools/test/voice-play.mjs
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
@@ -13,9 +14,10 @@ const manifest = JSON.parse(readFileSync(new URL('../../app/voice/index.json', i
 const entries = Object.entries(manifest.lines);
 const pickLine = (f) => entries.find(([, v]) => f(v.split(' ')))?.[0];
 const plain = pickLine((v) => v.some((x) => !x.endsWith('s')) && v.some((x) => x.endsWith('s')));
+const long = entries.find(([t, v]) => t.length > 25 && v.split(' ').some((x) => !x.endsWith('s')))?.[0];
 if (!plain) { console.log('no clips yet — run node tools/voice/build-voice.mjs'); process.exit(1); }
 
-const PAGE = `(async (plain) => {
+const PAGE = `(async (plain, long) => {
   const sp = await import('./js/lib/speech.js');
   for (let i = 0; i < 50 && !sp.hasStudio(); i++) await new Promise((r) => setTimeout(r, 100));
   const log = [];
@@ -35,6 +37,31 @@ const PAGE = `(async (plain) => {
   out.jiji = await run('jiji', () => sp.speak('수고했어요!', { who: 'jiji', studioOnly: true }));
   out.jijiName = vc.clipName('jiji', false, '수고했어요!');
   out.jijiNone = await run('jiji-none', () => sp.speak('이 문장은 클립이 없습니다 정말로요', { who: 'jiji', studioOnly: true }));
+  // A conversation: one clip per turn, each in its speaker's voice (two different voices).
+  const dlg = '주말에 뭐 할 거예요?\\n친구 결혼식이 있어서 대전에 가요.';
+  out.dialogueWant = vc.dialogueTurns(dlg).map(([t, v]) => vc.clipName(v, false, t));
+  out.dialogue = await run('dialogue', () => sp.speak(dlg));
+  // Moving on silences the old line: a stop mid-clip, a cancelled autoplay timer, a route change.
+  const audios = [];
+  HTMLMediaElement.prototype.play = function () { audios.push(this); log.push({ kind: 'clip' }); return realPlay.call(this); };
+  const sounding = () => audios.some((a) => !a.paused && !a.ended);
+  let p = sp.speak(long);
+  await new Promise((r) => setTimeout(r, 400));
+  out.stopWasPlaying = sounding();
+  sp.stopSpeaking();
+  await p;
+  out.stopSilent = !sounding();
+  log.length = 0;
+  sp.speakSoon(long, {}, 150);
+  sp.stopSpeaking(); // she answered before the autoplay started
+  await new Promise((r) => setTimeout(r, 600));
+  out.soonCancelled = log.length === 0;
+  p = sp.speak(long);
+  await new Promise((r) => setTimeout(r, 400));
+  out.routeWasPlaying = sounding();
+  location.hash = '#/course';
+  await p;
+  out.routeSilent = !sounding();
   sp.setSpeechPrefs({ engine: 'browser' });
   out.browser = await run('browser', () => sp.speak(plain));
   sp.setSpeechPrefs({ engine: 'studio' });
@@ -61,7 +88,7 @@ try {
   ws.addEventListener('message', (e) => { const m = JSON.parse(e.data); if (pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); } });
   const evalJS = (expression) => new Promise((r) => { const i = ++id; pending.set(i, r); ws.send(JSON.stringify({ id: i, method: 'Runtime.evaluate', params: { expression, awaitPromise: true, returnByValue: true } })); });
   await sleep(2500);
-  const m = await evalJS(`(${PAGE})(${JSON.stringify(plain)})`);
+  const m = await evalJS(`(${PAGE})(${JSON.stringify(plain)}, ${JSON.stringify(long)})`);
   const r = JSON.parse(m.result?.result?.value || '{}');
   const check = (ok, what) => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}`); if (!ok) failed++; };
   check(r.studio, 'manifest loaded');
@@ -71,6 +98,11 @@ try {
   check(r.browser?.log[0]?.kind === 'browser', 'Browser voice setting uses speechSynthesis');
   check(r.jiji?.log[0]?.kind === 'clip' && r.jiji.urls.some((u) => u.includes(r.jijiName)), 'Jiji speaks her corner line in her own voice');
   check(r.jijiNone?.log.length === 0, 'Jiji stays silent when she has no clip');
+  check(r.dialogue?.log.length === 2 && r.dialogue.log.every((x) => x.kind === 'clip') && r.dialogueWant?.every((n, i) => r.dialogue.urls.filter((u) => u.includes('/clips/'))[i]?.includes(n)),
+    'a conversation plays each turn in its own speaker’s voice');
+  check(r.stopWasPlaying && r.stopSilent, 'stopSpeaking() silences a clip mid-line');
+  check(r.soonCancelled, 'an autoplay that has not started yet is cancelled when she answers');
+  check(r.routeWasPlaying && r.routeSilent, 'leaving a screen silences it');
   const { CAST_INTRO } = await import('../../app/js/lib/voicecast.js');
   const miss = CAST_INTRO.filter(([who, , , t]) => !(manifest.lines[t] || '').split(' ').includes(who));
   check(!miss.length, `Meet the cast: every character has their own clip ${miss.map((x) => x[0]).join(' ')}`);

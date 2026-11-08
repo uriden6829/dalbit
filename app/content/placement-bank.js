@@ -2,6 +2,7 @@
 // The CORRECT option is always written FIRST; options are shuffled when shown.
 // Difficulty (b) comes from the level by hand — not yet calibrated on real answers.
 // Skills: hangul, vocab, grammar, reading, listening.
+// A listening conversation has one turn per line ('질문?\n대답.'): a woman and a man read the turns (voicecast.js).
 
 const LEVEL_B = { 0: -3.4, 1: -2.2, 2: -1.0, 3: 0.2, 4: 1.3, 5: 2.3, 6: 3.2 };
 let n = 0;
@@ -87,7 +88,7 @@ export const BANK = [
   R(3, '요즘 날씨가 갑자기 추워져서 감기에 걸린 사람이 많습니다. 외출할 때는 따뜻한 옷을 입으세요.', 'What is the main message?', ['Dress warmly — colds are going around', 'The weather is getting warmer', 'Many people go out in winter', 'Colds are not serious']),
   R(3, '이 식당은 음식이 맛있지만 항상 사람이 많아서 오래 기다려야 해요.', 'Which is true?', ['The food is good, but you have to wait a long time', 'The food is bad but cheap', 'There are never many people', 'You never need to wait'], -0.1),
   L(3, '죄송하지만 지금 자리가 없어서 삼십 분쯤 기다리셔야 해요.', 'What is the situation?', ['No seats now — about a 30-minute wait', 'The restaurant is closed', 'Seats will be free in 3 minutes', 'The food will take 30 minutes']),
-  L(3, '주말에 뭐 할 거예요? 친구 결혼식이 있어서 대전에 가요.', 'Why is the second speaker going to Daejeon?', ['A friend’s wedding', 'A business trip', 'To visit family', 'A concert'], 0.2),
+  L(3, '주말에 뭐 할 거예요?\n친구 결혼식이 있어서 대전에 가요.', 'Why is the second speaker going to Daejeon?', ['A friend’s wedding', 'A business trip', 'To visit family', 'A concert'], 0.2),
   L(3, '이 약은 하루에 세 번, 식사 후에 드세요.', 'How should the medicine be taken?', ['Three times a day, after meals', 'Once a day, before meals', 'Three pills at once', 'Only before sleep'], 0.1),
 
   // ---- TOPIK 4 ----
@@ -102,7 +103,7 @@ export const BANK = [
   R(4, '최근 혼자 사는 사람이 늘면서 소포장 식품의 판매가 크게 증가했다. 한 번에 먹을 만큼만 사려는 소비자가 많아졌기 때문이다.', 'Why have small-package food sales increased?', ['More people live alone and buy only what they need', 'Food prices have fallen', 'Families are getting bigger', 'Supermarkets have closed']),
   R(4, '이 공원은 시민들의 의견을 반영하여 새로 단장되었다. 산책로가 넓어졌고 밤에도 안전하게 이용할 수 있도록 조명이 설치되었다.', 'Which is true?', ['Lights were installed so it is safe at night', 'The park was closed to citizens', 'The paths became narrower', 'Citizens opposed the renovation'], 0.1),
   R(4, '고객들의 불만이 계속되자 회사는 결국 서비스 요금 인상 계획을 취소하기로 했다.', 'What happened?', ['The company cancelled its price rise after complaints', 'Customers agreed to higher prices', 'The company raised its prices', 'The service was discontinued'], -0.1),
-  L(4, '이번 프로젝트 마감이 언제까지죠? 원래는 금요일이었는데 다음 주 수요일로 연기됐어요.', 'When is the new deadline?', ['Next Wednesday', 'This Friday', 'Next Friday', 'This Wednesday']),
+  L(4, '이번 프로젝트 마감이 언제까지죠?\n원래는 금요일이었는데 다음 주 수요일로 연기됐어요.', 'When is the new deadline?', ['Next Wednesday', 'This Friday', 'Next Friday', 'This Wednesday']),
   L(4, '이번 역은 시청, 시청역입니다. 내리실 문은 오른쪽입니다. 1호선으로 갈아타실 고객께서는 이번 역에서 내리시기 바랍니다.', 'What should passengers changing to Line 1 do?', ['Get off at City Hall', 'Get off at the next station', 'Use the left-side door', 'Stay on the train'], -0.1),
   L(4, '요즘 일이 너무 많아서 운동할 시간이 없어요. 그래서 출퇴근할 때 한 정거장 먼저 내려서 걸어요.', 'What does the speaker do?', ['Walks part of the commute to get exercise', 'Goes to the gym after work', 'Quit their job', 'Takes a taxi to work'], 0.2),
 
@@ -117,7 +118,7 @@ export const BANK = [
   R(5, '전문가들은 무분별한 개발이 지역 생태계에 돌이킬 수 없는 피해를 줄 수 있다고 경고하며, 개발에 앞서 철저한 환경 영향 평가가 이루어져야 한다고 강조했다.', 'What do the experts emphasise?', ['A thorough environmental assessment before development', 'Stopping all development permanently', 'Developing the region faster', 'That ecosystems recover quickly']),
   R(5, '저출산 문제를 해결하기 위해서는 단순히 출산 장려금을 지급하는 것을 넘어, 일과 육아를 병행할 수 있는 사회적 환경을 조성하는 것이 무엇보다 중요하다.', 'What is the writer’s main point?', ['An environment for balancing work and childcare matters most', 'Childbirth subsidies alone are enough', 'The low birth rate is not a real problem', 'Parents should quit their jobs'], 0.2),
   R(5, '이 제품은 출시 직후 품질 논란에 휩싸였으나, 회사가 신속하게 문제를 인정하고 전량 교환해 주면서 오히려 소비자의 신뢰를 얻게 되었다.', 'What happened?', ['The company admitted the problem quickly and gained trust', 'The product launched with no problems', 'The company denied the quality issue', 'Consumers lost trust in the company']),
-  L(5, '이번 정책이 시행되면 중소기업의 부담이 커질 거라는 지적이 있는데요. 네, 그래서 정부는 일정 기간 동안 지원금을 제공해 그 부담을 덜어 줄 계획입니다.', 'How will the government respond to the concern?', ['Provide subsidies for a period to ease the burden', 'Cancel the policy', 'Raise taxes on small firms', 'Delay the policy indefinitely']),
+  L(5, '이번 정책이 시행되면 중소기업의 부담이 커질 거라는 지적이 있는데요.\n네, 그래서 정부는 일정 기간 동안 지원금을 제공해 그 부담을 덜어 줄 계획입니다.', 'How will the government respond to the concern?', ['Provide subsidies for a period to ease the burden', 'Cancel the policy', 'Raise taxes on small firms', 'Delay the policy indefinitely']),
   L(5, '전문가들은 수면 시간보다 수면의 질이 더 중요하다며, 잠들기 전 스마트폰 사용을 줄일 것을 권고했습니다.', 'What do the experts recommend?', ['Using phones less before bed — quality of sleep matters more', 'Sleeping more than eight hours', 'Using phones to fall asleep', 'Focusing on sleep time over quality'], -0.1),
 
   // ---- TOPIK 6 ----
@@ -130,7 +131,7 @@ export const BANK = [
   R(6, '언어는 단순한 의사소통의 도구를 넘어 그 언어를 사용하는 공동체의 세계관을 반영한다. 따라서 한 언어가 소멸한다는 것은 하나의 고유한 세계관이 사라지는 것과 다름없다.', 'According to the passage, a language dying means…', ['the loss of a unique worldview', 'the end of all communication', 'people learn new languages faster', 'nothing more than losing words']),
   R(6, '인공지능 기술의 발전이 일자리를 감소시킬 것이라는 우려가 있지만, 역사적으로 기술 혁신은 기존 일자리를 대체하는 동시에 새로운 형태의 일자리를 창출해 왔다.', 'What is the writer’s view?', ['Innovation has historically created new jobs as well', 'AI will certainly eliminate most jobs', 'Technology never affects employment', 'AI development should stop'], -0.1),
   L(6, '이번 연구는 표본의 크기가 작아 결과를 일반화하기에는 한계가 있지만, 후속 연구의 방향을 제시했다는 점에서 의의가 있다고 평가됩니다.', 'How is the study evaluated?', ['Limited generalisability, but it points the way for future research', 'Its results apply to everyone', 'It was a complete failure', 'Its sample was very large']),
-  L(6, '도시 재생 사업이 오히려 원주민을 내몰고 있다는 비판에 대해서는 어떻게 보십니까? 그 점을 겸허히 받아들이고, 기존 주민들이 계속 거주할 수 있도록 임대료 상승을 제한하는 방안을 마련하겠습니다.', 'What does the second speaker propose?', ['Limiting rent rises so existing residents can stay', 'Stopping the project entirely', 'Moving residents to new towns', 'Ignoring the criticism'], 0.2),
+  L(6, '도시 재생 사업이 오히려 원주민을 내몰고 있다는 비판에 대해서는 어떻게 보십니까?\n그 점을 겸허히 받아들이고, 기존 주민들이 계속 거주할 수 있도록 임대료 상승을 제한하는 방안을 마련하겠습니다.', 'What does the second speaker propose?', ['Limiting rent rises so existing residents can stay', 'Stopping the project entirely', 'Moving residents to new towns', 'Ignoring the criticism'], 0.2),
 ];
 
 // Read-aloud lines for the optional speaking check, by level.

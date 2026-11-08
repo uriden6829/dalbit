@@ -74,7 +74,7 @@ function runner(ch, lines, { title, roleplay = false, back, markChapter = false 
     const mine = !roleplay || playMe === null || l.who === playMe;
     const heard = h('div', { class: 'heard' });
     const status = h('div', { class: 'muted small' });
-    const next = h('button', { class: 'btn primary', onclick: () => { i++; step(); } }, i === lines.length - 1 ? 'Finish' : 'Next ', iconEl('arrow', 16));
+    const next = h('button', { class: 'btn primary', onclick: () => { stopSpeaking(); i++; step(); } }, i === lines.length - 1 ? 'Finish' : 'Next ', iconEl('arrow', 16));
     const card = h('div', { class: 'card stack center' },
       h('div', { class: 'small muted' }, `${i + 1} / ${lines.length}${roleplay && l.who ? ` · ${CAST_NAMES[l.who] || l.who}` : ''}`),
       h('div', { class: 'big-ko ko', style: { fontSize: 'clamp(1.8rem, 5vw, 2.6rem)' } }, l.ko),

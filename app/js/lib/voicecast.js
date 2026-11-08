@@ -19,7 +19,9 @@ export const VOICES = {
   F4: { g: 'f', speed: 0.85, desc: 'quick, lively (sentences only)' },
   F5: { g: 'f', speed: 0.93, desc: 'low, mature' },
   M1: { g: 'm', speed: 0.86, desc: 'light, young' },
-  M2: { g: 'm', speed: 0.88, desc: 'calm, clear — the man teacher' },
+  // The man teacher: M2 with a little of M4's warmth, which measured more natural (UTMOS 3.87 → 4.0, level with
+  // F1), read single words more clearly, and is still recognisably the same man (task-69 NOTES.md "Follow-up 2").
+  M2: { g: 'm', speed: 0.88, mix: { ttl: { M2: 0.7, M4: 0.3 } }, shift: 0, desc: 'calm, clear, warm — the man teacher' },
   M3: { g: 'm', speed: 0.8, desc: 'brisk (sentences only)' },
   M4: { g: 'm', speed: 0.88, desc: 'friendly' },
   M5: { g: 'm', speed: 0.93, desc: 'deep, older (sentences only)' },
@@ -76,10 +78,24 @@ const hash = (s) => { let x = 7; for (const c of s) x = (x * 31 + c.charCodeAt(0
 export const speechText = (t) => String(t).split(/\s=\s/).pop().replace(/\s*\([^)]*\)/g, '').replace(/[“”"「」『』]/g, '').replace(/\s*[—–]\s*/g, ', ').replace(/~/g, '').replace(/\s+/g, ' ').trim();
 
 // Voice for a line. Lesson text: the same text always gets the same teacher, so replays sound identical.
+// `who` may also name a voice directly (a turn in a conversation, below).
 export function castVoice(text, who = '', mix = true) {
   if (who && CAST[who]) return CAST[who];
+  if (who && VOICES[who]) return who;
   if (who === 'teacher' || !mix) return TEACHERS.f;
   return hash(String(text)) % 3 === 2 ? TEACHERS.m : TEACHERS.f;
+}
+
+// Example conversations are written one turn per line: '주말에 뭐 할 거예요?\n친구 결혼식이 있어서 대전에 가요.'
+// Two people are talking, so the turns alternate between the two teachers, a woman and a man — always, even with
+// "one voice" in Settings, because who is speaking is part of the meaning ("Why is the second speaker…?"). Who speaks
+// first depends on the text, so she hears both. Returns [[turn, voice], …]; a plain line is one turn in its usual voice.
+// Every turn ends like a sentence (. ! ? …); other multi-line text (a menu: '카페 메뉴\n라떼 3,500원') is one voice.
+export function dialogueTurns(text, who = '', mix = true) {
+  const turns = String(text).split('\n').map((t) => t.trim()).filter(Boolean);
+  if (turns.length < 2 || !turns.every((t) => /[.!?…]$/.test(t))) return [[String(text), castVoice(speechText(text), who, mix)]];
+  const pair = hash(turns[0]) % 2 ? [TEACHERS.m, TEACHERS.f] : [TEACHERS.f, TEACHERS.m];
+  return turns.map((t, i) => [t, pair[i % 2]]);
 }
 
 // Clip file name (without folder): changes when the text, voice, its speed or STUDIO_VERSION change, so the

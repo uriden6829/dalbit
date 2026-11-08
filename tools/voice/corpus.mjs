@@ -4,7 +4,7 @@ import { COURSE } from '../../app/content/index.js';
 import { BANK } from '../../app/content/placement-bank.js';
 import { letterSyllables } from '../../app/js/engine/exercises.js';
 import JIJI from '../../app/content/jiji-lines.js';
-import { castVoice, speechText, EXTRA_LINES, TEACHERS, jijiKorean } from '../../app/js/lib/voicecast.js';
+import { castVoice, speechText, EXTRA_LINES, TEACHERS, jijiKorean, dialogueTurns } from '../../app/js/lib/voicecast.js';
 
 // A line worth a clip: has a Hangul syllable, no Latin letters, no cloze blank / "a = b" notes, and is not grammar
 // notation like "-(으)ㄹ까요?" (loose jamo, brackets, leading dash).
@@ -14,6 +14,9 @@ const sentences = (t) => t.split(/(?<=[.!?。])\s+/).filter(Boolean);
 export function buildCorpus() {
   const lines = new Map(); // text -> Set(who)
   const add = (raw, who = '') => {
+    // A conversation: each turn in the voice of whoever says it.
+    const turns = raw.includes('\n') ? dialogueTurns(raw) : [];
+    if (turns.length > 1) { for (const [turn, voice] of turns) add(turn, voice); return; }
     const t = speechText(raw);
     if (!spoken(t)) return;
     if (!t) return;

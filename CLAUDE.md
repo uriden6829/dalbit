@@ -36,7 +36,10 @@ and installed on the learner's PC; her progress lives only in her browser. Every
   git-ignored `tools/voice/.models/`). It renders only new/changed lines and deletes unused clips; validate warns
   about lines without a clip (they fall back to the browser voice). `tools/voice/` is the ONE place with npm deps
   (dev-only, never shipped). Numbers are read via `tools/voice/korean-numbers.mjs`. Playback test:
-  `node tools/test/voice-play.mjs`. Browser voice fallback + slow + PERSONAS: `app/js/lib/speech.js`. Music: `app/js/lib/bgm.js` +
+  `node tools/test/voice-play.mjs`. A two-person example conversation is written one turn per line
+  (`'질문?\n대답.'`) and is read by two voices (voicecast `dialogueTurns`). Audio that plays when a question appears
+  uses `speakSoon()` (cancelled if she answers first); answering, the next question and every route change stop the
+  old line. Browser voice fallback + slow + PERSONAS: `app/js/lib/speech.js`. Music: `app/js/lib/bgm.js` +
   Live Studio runtime in `app/vendor/`; presets built by `node tools/build-bgm.mjs` (do not edit bgm-presets.js by hand).
 - Jiji in the corner: `app/js/ui/companion.js`; word tools: `ui/wordtools.js`; word bank screen: `ui/wordbank.js`.
   Screens talk to them through `app/js/lib/bus.js` events (route, exercise, answer, session-end, story, tts, mic).

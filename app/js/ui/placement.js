@@ -1,7 +1,7 @@
 // Entrance exam: self-assessment → adaptive test → optional read-aloud → results and placement.
 import { h, svg, confirmDialog } from '../lib/dom.js';
 import { getState, update } from '../lib/store.js';
-import { speak, hasSTT, listen, stopSpeaking } from '../lib/speech.js';
+import { speak, speakSoon, hasSTT, listen, stopSpeaking } from '../lib/speech.js';
 import { similarity } from '../lib/hangul.js';
 import { newRecord, seedKnown, isLearned } from '../lib/srs.js';
 import { Placement, SELF } from '../engine/placement.js';
@@ -47,12 +47,13 @@ export function render(_, { go, onLeave }) {
     if (p.passage) promptEl.append(h('div', { class: 'passage' }, p.passage));
     if (p.audio) {
       promptEl.append(h('div', { class: 'row', style: { justifyContent: 'center' } }, speakBtn(p.audio, { big: true }), slowBtn(p.audio)));
-      setTimeout(() => speak(p.audio), 300);
+      speakSoon(p.audio, {}, 300);
     }
     if (p.q) promptEl.append(h('div', { class: 'sub', style: { marginTop: '12px', fontWeight: 700 } }, p.q));
     let answered = false;
     const pick = (i) => {
       if (answered) return; answered = true;
+      stopSpeaking(); // the question's audio ends with the question
       test.answer(it, i >= 0 && opts[i].ok);
       buttons.forEach((b) => { b.disabled = true; });
       if (i >= 0) buttons[i].classList.add('sel');

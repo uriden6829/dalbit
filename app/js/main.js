@@ -1,6 +1,6 @@
 import { h, svg, $, modal } from './lib/dom.js';
 import { loadState, getState, update, save } from './lib/store.js';
-import { initSpeech, speechPrefsFrom } from './lib/speech.js';
+import { initSpeech, speechPrefsFrom, stopSpeaking } from './lib/speech.js';
 import { icon } from './art/icons.js';
 import { jijiSVG } from './art/jiji.js';
 import { VERSION, CHANGELOG } from './version.js';
@@ -80,6 +80,7 @@ export function brandMark() {
 let routing = 0;
 async function route() {
   const token = ++routing;
+  stopSpeaking(); // leaving a screen silences it, on every screen
   for (const fn of leaveFns) { try { fn(); } catch { /* ignore */ } }
   leaveFns = [];
   const st = getState();
