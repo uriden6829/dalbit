@@ -1,6 +1,6 @@
 // Service worker: network-first for the app (so updates show up as soon as she's online),
 // cache fallback for offline, cache-first for fonts. BUILD is rewritten by tools/build.mjs.
-const BUILD = 'c4ec1b999b2d';
+const BUILD = '264c1727505c';
 const CACHE = `dalbit-${BUILD}`;
 const VOICE_CACHE = 'voice-clips-1';
 

@@ -27,6 +27,7 @@ export const VOICES = {
   M5: { g: 'm', speed: 0.93, desc: 'deep, older (sentences only)' },
 };
 export const SLOW = 0.66; // slow clips: speed × SLOW, read in short phrases with pauses (≈3.4 syllables a second)
+// A voice may set its own `slow` factor instead: below an engine speed of ≈0.5 the model repeats words.
 
 // Character voices, designed for the story cast: a blend of the preset voices (ttl = timbre, dp = rhythm, weights),
 // a speed, and a shift in semitones (resampling: + higher and smaller, − bigger and darker). Measured in the
@@ -35,10 +36,12 @@ export const SLOW = 0.66; // slow clips: speed × SLOW, read in short phrases wi
 // Ids are the CAST keys; none may end in "s" (the manifest marks slow clips with a trailing s).
 const D = (g, ttl, speed, shift = 0, dp = null, desc = '') => ({ g, mix: dp ? { ttl, dp } : { ttl }, speed, shift, desc });
 Object.assign(VOICES, {
-  // Jiji, the academy's black cat (a she). Dry, deadpan, dignified, kind underneath. A low, smooth alto
-  // (≈150 Hz) that sits between the women and the men, so she never sounds like one of the townspeople;
-  // the rhythm of the mature F5 voice and a slightly slower pace than the teacher: unhurried, every word placed.
-  jiji: D('f', { F5: 0.5, M1: 0.3, M4: 0.2 }, 0.82, 0, { F5: 1 }, 'Jiji: low, dry alto, neither woman nor man — a cat with opinions'),
+  // Jiji, the academy's black cat (a she). Modelled on Jiji in Kiki's Delivery Service (Rei Sakuma's Japanese
+  // voice): a small, high, cheeky little cat with a boyish edge. Mostly the light young M1 voice with F4's lively
+  // rhythm, raised 4 semitones (≈230 Hz and a smaller "body"), so she sounds small without sounding like the
+  // girl or Minji (task-69 NOTES.md "Follow-up 3"). Replaces v1.3's low, dry alto. Slow: × 0.8, since the shift
+  // already asks the engine for 0.8 / 1.26 and × 0.66 on top made it stutter (≈4.2 syllables a second slow).
+  jiji: { ...D('f', { F4: 0.4, M1: 0.6 }, 0.8, 4, { F4: 1 }, 'Jiji: small, high, cheeky — a little black cat with opinions'), slow: 0.8 },
   me: D('f', { F1: 0.5, F4: 0.5 }, 0.9, 0.5, null, 'you: young, earnest, a little brighter than the teacher'),
   minji: D('f', { F2: 1 }, 0.92, 1.2, { F2: 1 }, 'Minji: bright, quick, the youngest adult voice'),
   grandma: D('f', { F5: 0.6, F3: 0.4 }, 0.84, -0.7, { F5: 1 }, 'Grandma: warm, low, unhurried'),
@@ -102,7 +105,7 @@ export function dialogueTurns(text, who = '', mix = true) {
 // builder re-renders exactly what changed. FNV-1a, base36.
 export function clipName(voice, slow, text) {
   let h1 = 0x811c9dc5, h2 = 0x01000193;
-  for (const c of `${STUDIO_VERSION}|${voice}|${voiceKey(voice)}|${slow ? SLOW : 'n'}|${text}`) {
+  for (const c of `${STUDIO_VERSION}|${voice}|${voiceKey(voice)}|${slow ? VOICES[voice]?.slow || SLOW : 'n'}|${text}`) {
     const k = c.codePointAt(0);
     h1 = Math.imul(h1 ^ k, 16777619) >>> 0;
     h2 = Math.imul(h2 ^ k, 2246822519) >>> 0;

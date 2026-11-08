@@ -1,4 +1,4 @@
-// Things Jiji says. Keep them short, dry and kind — a cat, not a cheerleader.
+// Things Jiji says. Keep them short, cheeky and kind — a cat, not a cheerleader.
 // {name} is her name (may be empty). In the corner, Jiji says the Korean part of a line out loud in her own studio
 // voice, so a new Korean bit needs a clip: run node tools/voice/build-voice.mjs --check after adding one.
 export default {

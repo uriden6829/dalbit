@@ -78,7 +78,7 @@ export const PERSONAS = {
   me: { g: 'f', pitch: 1.02 }, minji: { g: 'f', pitch: 1.07, rate: 1.04 }, grandma: { g: 'f', pitch: 0.9, rate: 0.9 },
   mom: { g: 'f', pitch: 0.97 }, pharm: { g: 'f', pitch: 1 }, woman: { g: 'f', pitch: 1.02 }, staff: { g: 'f', pitch: 1.04 },
   clerk: { g: 'm', pitch: 1.02 }, head: { g: 'f', pitch: 0.93, rate: 0.94 }, man: { g: 'm' }, dad: { g: 'm', pitch: 0.94, rate: 0.95 },
-  driver: { g: 'm', pitch: 0.96, rate: 0.97 }, jiji: { g: 'f', pitch: 0.9, rate: 0.96 }, narrator: { g: 'f', rate: 0.97 },
+  driver: { g: 'm', pitch: 0.96, rate: 0.97 }, jiji: { g: 'f', pitch: 1.15, rate: 1.02 }, narrator: { g: 'f', rate: 0.97 },
   baker: { g: 'm', pitch: 0.95 }, grandpa: { g: 'm', pitch: 1.02, rate: 0.96 }, younggrandma: { g: 'f', pitch: 1.06 }, captain: { g: 'm', pitch: 0.9, rate: 0.95 }, girl: { g: 'f', pitch: 1.12, rate: 1.05 }, boy: { g: 'm', pitch: 1.1 },
 };
 const hash = (s) => { let x = 7; for (const c of s) x = (x * 31 + c.charCodeAt(0)) | 0; return Math.abs(x); };

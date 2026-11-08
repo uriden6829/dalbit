@@ -93,7 +93,7 @@ async function render(tts, { text, voice, slow }, seed) {
   }
   const ph = phrases(readable(text), SLOW_PHRASE);
   for (const [k, p] of ph.entries()) {
-    const q = await say(p.text, def.speed * SLOW, seed + k);
+    const q = await say(p.text, def.speed * (def.slow || SLOW), seed + k);
     // Each phrase levelled on its own; the clip keeps the same edge padding as normal clips (60 ms / 140 ms).
     parts.push(post(q, tts.sr, { lead: k ? 0.03 : 0.06, tail: k < ph.length - 1 ? 0.06 : 0.14 }));
     if (k < ph.length - 1) parts.push(silence(tts.sr, p.end ? SLOW_GAP_END : SLOW_GAP));
