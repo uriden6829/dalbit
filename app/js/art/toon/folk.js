@@ -100,39 +100,17 @@ function eye(side, cx, cy, m, c, t, p) {
     return `<path d="M${cx - w} ${cy + 1} Q${cx} ${cy + 5} ${cx + w} ${cy + 1}" stroke="${INK}" stroke-width="${lw}" fill="none" stroke-linecap="round"/>` +
       (male ? '' : `<path d="M${cx + side * w} ${cy + 1} l${side * 3} -2" stroke="${INK}" stroke-width="1.6" stroke-linecap="round"/>`) + marks;
   }
+  // Doodle diary: a dot eye (one simple shape), a tiny highlight, one upper lid tick for lashes on women.
   const open = m.eye === 'wide' ? 1.2 : m.eye;
-  const h = sh * open;
-  const top = cy - h * 0.66, bot = cy + h * 0.42;
-  const xo = cx + side * w, xi = cx - side * w;
-  const lid = `M${xi} ${cy + 1} C${xi + side * w * 0.2} ${top - 1} ${xo - side * w * 0.35} ${top - 2 + tilt} ${xo} ${cy - 2 + tilt}`;
-  const lower = `C${xo - side * w * 0.2} ${bot} ${xi + side * w * 0.3} ${bot + 1} ${xi} ${cy + 1}`;
-  const clip = nid('ec');
   const [lx, ly] = m.look || [0, 0];
-  const pr = (m.pupil || 1);
-  const ir = w * (male ? 0.66 : 0.74), irh = sh * 0.66 * Math.max(0.8, Math.min(1.1, open));
-  const ix = cx + lx * 0.9 + t * 3, iy = cy + ly * 0.7 - 0.5;
-  const ig = nid('ig');
+  const rx = Math.max(3.6, w * (male ? 0.4 : 0.46)) * (m.pupil ? Math.max(0.7, m.pupil) : 1), ry = Math.max(3.6, sh * open * (male ? 0.5 : 0.56));
+  const ix = cx + lx * 0.7 + t * 3, iy = cy + ly * 0.6;
   const blank = m.eye === 'wide';
-  return `<defs><clipPath id="${clip}"><path d="${lid} ${lower} Z"/></clipPath>
-      <linearGradient id="${ig}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${shade(c.eyeColor, 0.18)}"/><stop offset=".55" stop-color="${c.eyeColor}"/><stop offset="1" stop-color="${tint(c.eyeColor, 0.22)}"/></linearGradient></defs>
-    <path d="${lid} ${lower} Z" fill="#fffdf9"/>
-    <g clip-path="url(#${clip})">
-      <path d="${lid} L${xo} ${top - 6} L${xi} ${top - 6} Z" fill="${shade(c.skin, 0.12)}" opacity=".35"/>
-      ${blank ? `<ellipse cx="${ix}" cy="${iy}" rx="${ir * 0.45}" ry="${irh * 0.45}" fill="none" stroke="${c.eyeColor}" stroke-width="1.6"/>` : `
-      <ellipse cx="${ix}" cy="${iy}" rx="${ir}" ry="${irh}" fill="url(#${ig})"/>
-      <ellipse cx="${ix}" cy="${iy + 0.5}" rx="${ir * 0.48 * pr}" ry="${irh * 0.55 * pr}" fill="${shade(c.eyeColor, 0.42)}"/>
-      <ellipse cx="${ix}" cy="${iy}" rx="${ir}" ry="${irh}" fill="none" stroke="${shade(c.eyeColor, 0.3)}" stroke-width="1.1"/>
-      <path d="M${ix - ir * 0.8} ${iy + irh * 0.35} Q${ix} ${iy + irh * 0.95} ${ix + ir * 0.8} ${iy + irh * 0.35}" stroke="${tint(c.eyeColor, 0.35)}" stroke-width="1.6" fill="none" opacity=".7"/>
-      <path d="${lid} L${xo} ${top + 3} L${xi} ${top + 3} Z" fill="${shade(c.eyeColor, 0.35)}" opacity=".22"/>
-      <ellipse cx="${ix + 3.2 * p.eyeS}" cy="${iy - irh * 0.42}" rx="${(male ? 2.3 : 2.9) * p.eyeS}" ry="${(male ? 2.6 : 3.4) * p.eyeS}" fill="#fff"/>
-      <circle cx="${ix - 3}" cy="${iy + irh * 0.35}" r="1.3" fill="#fff" opacity=".85"/>
-      ${m.sparkle ? `<circle cx="${ix - 2.5}" cy="${iy - 2}" r="1.4" fill="#fff"/><circle cx="${ix + 2}" cy="${iy + 4}" r=".9" fill="#fff"/>` : ''}`}
-    </g>
-    <path d="${lid}" stroke="${INK}" stroke-width="${lw + 0.6}" fill="none" stroke-linecap="round"/>
-    ${male ? `<path d="M${xi + side * w * 0.15} ${top - 4} Q${cx} ${top - 6.5} ${xo - side * w * 0.05} ${top - 2.5 + tilt}" stroke="${INK}" stroke-width="1.1" fill="none" opacity=".45"/>`
-    : `<path d="M${xo - side * 1} ${cy - 2 + tilt} l${side * 4} ${-2.5}" stroke="${INK}" stroke-width="2.2" stroke-linecap="round"/>
-    <path d="M${xi + side * w * 0.2} ${top - 4.5} Q${cx} ${top - 8} ${xo - side * w * 0.1} ${top - 4.5 + tilt}" stroke="${INK}" stroke-width=".9" fill="none" opacity=".35"/>`}
-    <path d="M${xo - side * w * 0.15} ${bot - 0.5} Q${cx} ${bot + 1.6} ${xi + side * w * 0.45} ${bot - 0.5}" stroke="${INK}" stroke-width="1" fill="none" opacity=".55"/>${marks}`;
+  const core = blank
+    ? `<ellipse cx="${ix}" cy="${iy}" rx="${rx * 0.9}" ry="${ry * 0.9}" fill="#fffdf9" stroke="${INK}" stroke-width="${lw}"/><circle cx="${ix}" cy="${iy}" r="${rx * 0.28}" fill="${INK}"/>`
+    : `<ellipse cx="${ix}" cy="${iy}" rx="${rx}" ry="${ry}" fill="${INK}"/><circle cx="${ix + rx * 0.32}" cy="${iy - ry * 0.34}" r="${Math.max(1.3, rx * 0.26)}" fill="#fffdf9"/>${m.sparkle ? `<circle cx="${ix - rx * 0.35}" cy="${iy + ry * 0.35}" r="1" fill="#fffdf9"/>` : ''}`;
+  const lash = male ? '' : `<path d="M${cx + side * (rx + 1)} ${iy - ry * 0.6} l${side * 3.5} ${-2.2}" stroke="${INK}" stroke-width="2" stroke-linecap="round"/>`;
+  return `${core}${lash}${marks}`;
 }
 
 // Tapered brow: thick at the inner end, thin at the outer end (a filled crescent, not a stroke).
@@ -272,6 +250,7 @@ function hairLayer(d, col, { line = true, w = 2.3 } = {}) {
 }
 // Shine: a broken "angel ring" band across the crown + soft top light + flow strands, all clipped to the hair.
 function hairDetail(H, hc, t, clipD) {
+  return '';
   const cl = nid('hc'), gr = nid('hg');
   const dark = !/^#[c-f]/i.test(hc);
   const ring = tint(hc, dark ? 0.3 : 0.12), line = shade(hc, dark ? 0.12 : 0.2);
@@ -316,13 +295,13 @@ export function head(c, { mood = 'neutral', turn = 0, light, cutBack = false } =
   const fc = nid('fc');
   const shSide = t >= 0 ? -1 : 1;
   parts.push(`<defs><clipPath id="${fc}"><path d="${faceD}"/></clipPath></defs><g clip-path="url(#${fc})">
-    <path d="M${shSide * 60} -20 C${shSide * 50} 10 ${shSide * (p.jawW + 2) + j} ${p.jawY - 4} ${j + shSide * 10} ${p.chinY + 4} L${shSide * 70} ${p.chinY + 10}Z" fill="${sh}" opacity=".55"/>
-    <path d="${H.front}" fill="${sh}" opacity=".7" transform="translate(${t >= 0 ? -3 : 3} 7)"/>${H.side ? `<path d="${H.side}" fill="${sh}" opacity=".6" transform="translate(${t >= 0 ? 4 : -4} 3)"/>` : ''}
+    <path d="M${shSide * 60} -20 C${shSide * 50} 10 ${shSide * (p.jawW + 2) + j} ${p.jawY - 4} ${j + shSide * 10} ${p.chinY + 4} L${shSide * 70} ${p.chinY + 10}Z" fill="${sh}" opacity="0"/>
+    <path d="${H.front}" fill="${sh}" opacity=".0" transform="translate(${t >= 0 ? -3 : 3} 7)"/>${H.side ? `<path d="${H.side}" fill="${sh}" opacity="0" transform="translate(${t >= 0 ? 4 : -4} 3)"/>` : ''}
     <ellipse cx="${-sp + fx}" cy="${eyeY - 12}" rx="14" ry="5" fill="${tint(skin, 0.05)}" opacity=".0"/></g>`);
   // cheeks
   const blush = m.blush ?? 0.15;
-  if (blush > 0) parts.push(`<ellipse cx="${-26 + fx}" cy="${eyeY + 20}" rx="10" ry="5" fill="#f08f8f" opacity="${0.18 + blush * 0.4}"/><ellipse cx="${26 + fx}" cy="${eyeY + 20}" rx="10" ry="5" fill="#f08f8f" opacity="${0.18 + blush * 0.4}"/>`);
-  if (blush >= 0.9) parts.push(`<path d="M${-32 + fx} ${eyeY + 17} l4 -4 m2 4 l4 -4 m2 4 l4 -4 M${18 + fx} ${eyeY + 17} l4 -4 m2 4 l4 -4 m2 4 l4 -4" stroke="#d76d74" stroke-width="1.4" stroke-linecap="round"/>`);
+  if (blush > 0) { const pk = '#e98a8f', sc = (x0) => [0, 1, 2, 3].map((i) => `M${x0 + i * 4.2 - 5} ${eyeY + 24} l4 -7`).join(' '); parts.push(`<path d="${sc(-26 + fx)}" stroke="${pk}" stroke-width="${1.6 + blush}" stroke-linecap="round" opacity="${0.45 + blush * 0.4}" fill="none"/><path d="${sc(26 + fx)}" stroke="${pk}" stroke-width="${1.6 + blush}" stroke-linecap="round" opacity="${0.45 + blush * 0.4}" fill="none"/>`); }
+  if (false) parts.push(`<path d="M${-32 + fx} ${eyeY + 17} l4 -4 m2 4 l4 -4 m2 4 l4 -4 M${18 + fx} ${eyeY + 17} l4 -4 m2 4 l4 -4 m2 4 l4 -4" stroke="#d76d74" stroke-width="1.4" stroke-linecap="round"/>`);
   if (c.freckles) parts.push([[-30, 22], [-24, 25], [-34, 26], [30, 22], [24, 25], [34, 26]].map(([x, y]) => `<circle cx="${x + fx}" cy="${eyeY + y - 6}" r=".9" fill="${shade(skin, 0.3)}"/>`).join(''));
   // age: smile lines (nose wing → mouth corner), jowl hint
   if (old) parts.push(`<path d="M${-12 + fx} ${eyeY + 23} q-6 6 -5 13 M${12 + fx} ${eyeY + 23} q6 6 5 13" stroke="${sh2}" stroke-width="1.4" fill="none" stroke-linecap="round"/><path d="M${-p.jawW + 6 + j} ${p.jawY + 2} q4 8 10 10 M${p.jawW - 6 + j} ${p.jawY + 2} q-4 8 -10 10" stroke="${sh2}" stroke-width="1.1" fill="none" opacity=".7" stroke-linecap="round"/>`);
@@ -419,6 +398,7 @@ function hand(c, kind) {
 
 // light: { rim: colour, side: -1|1, glow } — rim light on the lit side of hair and shoulders.
 function rim(light, c) {
+  return '';
   if (!light?.rim) return '';
   const B = frame(c), s = light.side || 1;
   return `<path d="M${s * (B.nb + 2)} 78 C${s * (B.nb + 14)} 83 ${s * (B.sx - 20)} ${B.sy - 9} ${s * B.sx} ${B.sy} C${s * (B.dx - 5)} ${B.sy + 3} ${s * B.dx} ${B.dy - 9} ${s * B.dx} ${B.dy}" fill="none" stroke="${light.rim}" stroke-width="3" opacity=".6" stroke-linecap="round" transform="translate(${-s * 2} 2)"/>`;

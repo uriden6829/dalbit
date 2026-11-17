@@ -10,6 +10,7 @@ import { FOLK, learner, bust, figure, flyer } from './folk.js';
 import { VISTAS, blurred, bokeh, rain } from './vista.js';
 import { jijiGroup } from '../jiji.js';
 import { shade, mix } from '../color.js';
+import { doodle, PAPER } from '../doodle.js';
 
 export const W = 360;
 export const SHOTS = ['establish', 'wide', 'medium', 'bust', 'close', 'detail', 'flight'];
@@ -108,8 +109,9 @@ export function panelSVG2(p, { look } = {}) {
   if (shot === 'detail') {
     bg = `<rect width="${W}" height="${H}" fill="${p.bgColor || '#efe4cf'}"/>` + (PROPS[p.prop]?.(W, H) || '');
   } else if (shot === 'bust' || shot === 'close') {
-    bg = blurred(p.scene || 'plain', W, H, o, shot === 'close' ? 3.4 : 2.4);
-    if (p.time === 'night' || p.time === 'late') bg += bokeh(W, H, ['#ffd88a', '#a9b6ff'], { n: 8, seed: (p.seed || 3) + 1, y1: 0.6 });
+    const night0 = p.time === 'night' || p.time === 'late';
+    const vb = (VISTAS[p.scene] || VISTAS.plain)(W, H, o);
+    bg = `<g transform="translate(${-W * 0.15} ${-H * 0.1}) scale(1.3)">${vb.bg}${vb.fg || ''}</g><rect width="${W}" height="${H}" fill="${night0 ? PAPER.night : PAPER.day}" opacity="${shot === 'close' ? 0.72 : 0.6}"/>`;
   } else {
     const v = (VISTAS[p.scene] || VISTAS.plain)(W, H, o);
     bg = shot === 'medium' ? `<g transform="translate(${-W * 0.12} ${-H * 0.06}) scale(1.24)">${v.bg}</g>` : v.bg;
@@ -125,12 +127,10 @@ export function panelSVG2(p, { look } = {}) {
   const tint = light?.tint ? `<rect width="${W}" height="${H}" fill="${light.tint}" opacity="${light.tintA}" style="mix-blend-mode:multiply"/>` : '';
   const sfx = (p.sfx || []).map((s) => `<text x="${s.x * W}" y="${s.y * H}" transform="rotate(${s.rot || -8} ${s.x * W} ${s.y * H})" font-family="Noto Sans KR, sans-serif" font-weight="800" font-size="${s.size || 26}" fill="${s.color || '#fff'}" stroke="${INK}" stroke-width="${(s.size || 26) / 9}" paint-order="stroke" letter-spacing="1">${s.text}</text>`).join('');
   const sepia = p.fx?.includes('sepia') ? id('sp') : null;
-  const grain = id('gr');
-  const body = `${bg}${figs}${fg}${tint}${fxLayer((p.fx || []).filter((f) => f !== 'sepia'), H, p)}${sfx}`;
-  return `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" preserveAspectRatio="xMidYMid slice"><defs>
-    <filter id="${grain}" x="0" y="0" width="100%" height="100%"><feTurbulence type="fractalNoise" baseFrequency=".85" numOctaves="2" seed="${n % 40}"/><feColorMatrix values="0 0 0 0 .3 0 0 0 0 .25 0 0 0 0 .2 0 0 0 .07 0"/></filter>
-    ${sepia ? `<filter id="${sepia}"><feColorMatrix type="matrix" values=".5 .45 .2 0 .06  .42 .42 .18 0 .04  .32 .32 .14 0 .02  0 0 0 1 0"/></filter>` : ''}</defs>
-    <g ${sepia ? `filter="url(#${sepia})"` : ''}>${body}</g><rect width="${W}" height="${H}" filter="url(#${grain})"/></svg>`;
+  const night = (p.time || (INDOOR.has(p.scene) ? 'day' : 'night')) !== 'day' && ['night', 'late', 'storm'].includes(p.time || (INDOOR.has(p.scene) ? 'day' : 'night'));
+  const body = `${bg}${figs}${fg}${tint}${fxLayer((p.fx || []).filter((f) => f !== 'sepia' && f !== 'vignette'), H, p)}${sfx}`;
+  const inner = sepia ? `<defs><filter id="${sepia}"><feColorMatrix type="matrix" values=".5 .45 .2 0 .06  .42 .42 .18 0 .04  .32 .32 .14 0 .02  0 0 0 1 0"/></filter></defs><g filter="url(#${sepia})">${body}</g>` : body;
+  return `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" preserveAspectRatio="xMidYMid slice">${doodle(inner, { w: W, h: H, night, seed: 3 + (n % 37) })}</svg>`;
 }
 
 // Which side a speaker's bubble sits on (v2 cast format).

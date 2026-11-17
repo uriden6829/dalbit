@@ -1,6 +1,7 @@
 // Bumped by tools/release.mjs. The newest entry goes first; she sees new notes once after updating.
-export const VERSION = '1.4.0';
+export const VERSION = '1.5.0';
 export const CHANGELOG = [
+  { version: '1.5.0', notes: ["New look: all the pictures are now drawn like a doodle diary, with wobbly pen lines, crayon colour, dot eyes and scribbled blush. On the night screens the pen turns into chalk, and Jiji is a chalk drawing."] },
   { version: '1.4.0', notes: ["New pictures: Jiji has been redrawn, with moonlight on her fur so she glows softly against the night sky, and bigger, rounder eyes.","Everyone in 달빛 배달부 has a face of their own now, from Minji's dad with his glasses to the Captain's bushy beard, and whole-body pictures have real arms, hands and poses.","The harbour town got painted: pastel houses up the hill, blue and orange roofs, fishing boats at the pier."] },
   { version: '1.3.2', notes: ["Jiji has a cuter voice now: small, high and a little cheeky, like the black cat in Kiki's Delivery Service. Pet her in the corner, or hear her in Settings, under Voice, Meet the cast."] },
   { version: '1.3.1', notes: ["Audio now stops the moment you answer or move on, so a quick answer never leaves the old sentence playing.","The man's voice is warmer and more natural.","Conversations in the entrance exam are now read by two different people, so you can tell who asks and who answers."] },

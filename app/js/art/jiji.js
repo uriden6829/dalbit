@@ -5,6 +5,7 @@
 
 const FUR = '#1e1c27', FUR_HI = '#34304a', FUR_LO = '#121119', RIM = '#857ec0';
 const HAT = '#40305c', HAT_HI = '#5a4881', HAT_LO = '#291f3e', BAND = '#d4b26a', IRIS = ['#fdf0b8', '#f0cf6a', '#c99a34'];
+import { doodle } from './doodle.js';
 let uid = 0;
 const EYE = { slant: 0.2, w: 1.05, h: 1.3, pupil: [4.2, 6.2] };
 
@@ -14,8 +15,10 @@ const EAR_L = 'M33 70 Q27.5 51 31 37.5 Q33.5 35.5 36.5 38 Q46 45.5 52.5 56Z', EA
 const IN_L = 'M35.5 63 Q32.5 51 34.3 43.5 Q42 49 47 56Z', IN_R = 'M84.5 63 Q87.5 51 85.7 43.5 Q78 49 73 56Z';
 
 // Moonlit rim: the shape in rim colour, then the same shape shifted down-right on top, clipped to the shape.
-function rimmed(d, fill, k, dx = 1.1, dy = 0.9) {
-  return `<defs><clipPath id="jc${k}"><path d="${d}"/></clipPath></defs><g clip-path="url(#jc${k})"><path d="${d}" fill="url(#jr${k.split('-')[0]})"/><path d="${d}" fill="${fill}" transform="translate(${dx} ${dy})"/></g>`;
+// Doodle diary: flat fill with a pale chalk outline (so black fur reads on the night-blue screens); no gradients.
+const CHALK = '#c4bde6';
+function rimmed(d, fill) {
+  return `<path d="${d}" fill="${String(fill).startsWith('url') ? FUR : fill}" stroke="${CHALK}" stroke-width="1.7" stroke-linejoin="round"/>`;
 }
 
 // One almond cat eye. side -1 = left, 1 = right. o: { open, look:[dx,dy], pupil:[rx,ry], lid: 0..1 (upper lid drop), slant }
@@ -28,10 +31,10 @@ function eye(cx, cy, side, k, o = {}) {
   const px = cx + lk[0], py = cy + 0.6 + lk[1];
   const lid = o.lid ? `<path d="M${cx - 12} ${cy - 11} L${cx + 12} ${cy - 11} L${cx + 12} ${cy - 9 + o.lid * 13 + side * (o.slant || 0)} L${cx - 12} ${cy - 9 + o.lid * 13 - side * (o.slant || 0)}Z" fill="${FUR}"/><path d="M${cx - 12} ${cy - 9 + o.lid * 13 - side * (o.slant || 0)} L${cx + 12} ${cy - 9 + o.lid * 13 + side * (o.slant || 0)}" stroke="${FUR_LO}" stroke-width="1.6"/>` : '';
   return `<defs><clipPath id="je${k}"><path d="${d}"/></clipPath></defs>
-    <g clip-path="url(#je${k})"><path d="${d}" fill="url(#ji${k})"/>
+    <g clip-path="url(#je${k})"><path d="${d}" fill="${IRIS[1]}"/>
       <ellipse cx="${px}" cy="${py}" rx="${prx}" ry="${pry}" fill="#100f17"/>
-      <circle cx="${px + 2.6}" cy="${py - 3.4}" r="${1.9 * s}" fill="#fff"/><circle cx="${px - 2.3}" cy="${py + 3.2}" r=".95" fill="#fff" opacity=".75"/>${o.wet ? `<path d="M${cx - 6} ${cy + 4.4} Q${cx} ${cy + 6.6} ${cx + 6} ${cy + 4.4}" stroke="#fff" stroke-width="1.1" fill="none" opacity=".7"/>` : ''}${lid}</g>
-    <path d="M${xi} ${yi} C${xi + side * 1.5 * ew} ${cy - 6.8 * eh} ${xo - side * 3.6 * ew} ${cy - 8.8 * eh} ${xo} ${yo}" stroke="#0b0a10" stroke-width="1.5" fill="none" stroke-linecap="round"/>`;
+      <circle cx="${px + 2.2}" cy="${py - 3}" r="${1.7 * s}" fill="#fff"/>${lid}</g>
+    <path d="${d}" fill="none" stroke="#100f17" stroke-width="1.6" stroke-linejoin="round"/>`;
 }
 const closed = (cx, cy, side, down) => {
   const xo = cx + side * 8, xi = cx - side * 7.5;
@@ -77,9 +80,9 @@ export function jijiGroup(mood = 'idle', { animate = false } = {}) {
       <linearGradient id="jr${k}" x1="0" y1="0" x2=".75" y2="1"><stop offset="0" stop-color="${RIM}"/><stop offset=".45" stop-color="${RIM}" stop-opacity=".75"/><stop offset="1" stop-color="${RIM}" stop-opacity="0"/></linearGradient>
       <linearGradient id="jn${k}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#6e4560"/><stop offset="1" stop-color="#3a2738"/></linearGradient>
     </defs>
-    <ellipse cx="60" cy="146.5" rx="31" ry="3.6" fill="#000" opacity=".2"/>
+    
     <g class="tail">
-      <path d="M79 141 C97 143 107 131 105 115 C104 105 96.5 99 98.5 92.5" stroke="${RIM}" stroke-width="8.3" fill="none" stroke-linecap="round" opacity=".4" transform="translate(-.7 -.6)"/>
+      <path d="M79 141 C97 143 107 131 105 115 C104 105 96.5 99 98.5 92.5" stroke="#c4bde6" stroke-width="10.2" fill="none" stroke-linecap="round"/>
       <path d="M79 141 C97 143 107 131 105 115 C104 105 96.5 99 98.5 92.5" stroke="${FUR}" stroke-width="8" fill="none" stroke-linecap="round"/>
     </g>
     ${rimmed(BODY, `url(#jf${k})`, `${k}-b`)}
@@ -91,7 +94,7 @@ export function jijiGroup(mood = 'idle', { animate = false } = {}) {
     <path d="M51 101 L54 108.5 L56.5 104 L60 111 L63.5 104 L66 108.5 L69 101 Q60 104 51 101Z" fill="${FUR_HI}" opacity=".85"/>
     <g class="head">
       ${rimmed(EAR_L, FUR, `${k}-l`)}${rimmed(EAR_R, FUR, `${k}-r`, 0.8, 1.2)}
-      <path d="${IN_L}" fill="url(#jn${k})"/><path d="${IN_R}" fill="url(#jn${k})"/>
+      <path d="${IN_L}" fill="#6e4560"/><path d="${IN_R}" fill="#6e4560"/>
       ${rimmed(HEAD, `url(#jf${k})`, `${k}-h`)}
       <path d="M38 94 Q48 99 54 99.5 M82 94 Q72 99 66 99.5" stroke="${FUR_LO}" stroke-width="1.2" fill="none" opacity=".8"/>
       <g class="eyes">${eyes}</g>
@@ -102,7 +105,7 @@ export function jijiGroup(mood = 'idle', { animate = false } = {}) {
         <ellipse cx="60" cy="57.2" rx="31.5" ry="6.6" fill="${HAT_LO}"/>
         <ellipse cx="60" cy="55.6" rx="31.5" ry="6.2" fill="${HAT}"/>
         <path d="M30.5 56.4 Q60 64.6 89.5 56.4" stroke="${HAT_HI}" stroke-width="1.1" fill="none" opacity=".8"/>
-        <path d="M45.4 54.6 C47 42.5 51.6 31 57.6 21.4 C61.6 14.6 67.6 9.4 75.4 8.2 C79.6 7.6 83 9.4 84.4 12.4 C79.4 11.4 74.6 14.2 71.6 20.2 C68.4 28 69.8 42 75.2 54.6 Q60 57.6 45.4 54.6Z" fill="url(#jh${k})"/>
+        <path d="M45.4 54.6 C47 42.5 51.6 31 57.6 21.4 C61.6 14.6 67.6 9.4 75.4 8.2 C79.6 7.6 83 9.4 84.4 12.4 C79.4 11.4 74.6 14.2 71.6 20.2 C68.4 28 69.8 42 75.2 54.6 Q60 57.6 45.4 54.6Z" fill="${HAT}"/>
         <path d="M50.4 47.5 C52 38.5 55.6 30 60.4 23" stroke="${HAT_HI}" stroke-width="1.8" fill="none" stroke-linecap="round" opacity=".7"/>
         <path d="M46.2 50.2 Q60 52.6 73.9 50.2 L75 54.7 Q60 57.6 45.3 54.7Z" fill="${BAND}"/>
         <path d="M45.3 54.7 Q60 57.6 75 54.7" stroke="#9c7c3e" stroke-width=".9" fill="none"/>
@@ -115,5 +118,5 @@ export function jijiGroup(mood = 'idle', { animate = false } = {}) {
 }
 
 export function jijiSVG(mood = 'idle', { size = 120, animate = true, label = '지지' } = {}) {
-  return `<svg class="jiji" viewBox="0 0 120 150" width="${size}" height="${size * 1.25}" role="img" aria-label="${label}">${jijiGroup(mood, { animate })}</svg>`;
+  return `<svg class="jiji" viewBox="0 0 120 150" width="${size}" height="${size * 1.25}" role="img" aria-label="${label}">${doodle(jijiGroup(mood, { animate }), { w: 120, h: 150, night: true, scale: 0.4, paper: false })}</svg>`;
 }
